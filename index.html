@@ -58,15 +58,24 @@ function fmt(n) {
   return String(n);
 }
 function txt(s, x, y, size, color, align, weight) {
-  ctx.font = (weight || '700') + ' ' + size + 'px system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+  ctx.font = (weight || '600') + ' ' + size + 'px system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
   ctx.textAlign = align || 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineWidth = Math.max(2, size * 0.16);
-  ctx.strokeStyle = 'rgba(28,44,22,0.75)';
-  ctx.lineJoin = 'round';
-  ctx.strokeText(s, x, y);
   ctx.fillStyle = color || '#fff';
-  ctx.fillText(s, x, y);
+  if (size >= 16) {                    // 大字才描邊，字才會俐落
+    ctx.lineWidth = Math.max(1.2, size * 0.09);
+    ctx.strokeStyle = 'rgba(26,40,20,0.5)';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(s, x, y);
+    ctx.fillText(s, x, y);
+  } else {                             // 小字用柔影，避免描邊糊成一團
+    ctx.save();
+    ctx.shadowColor = 'rgba(16,28,12,0.6)';
+    ctx.shadowBlur = Math.max(2.5, size * 0.4);
+    ctx.shadowOffsetY = 1;
+    ctx.fillText(s, x, y);
+    ctx.restore();
+  }
 }
 
 /* ---------------- 音效 ---------------- */
@@ -142,8 +151,8 @@ var UPGS = [
     val: function (l) { return (6 + 2 * l) + ' 格'; } },
   { id: 'field', ic: '🌱', n: '肥沃土壤', d: '玉米長更快、田 +1 格', base: 40, mul: 1.60, max: 12,
     val: function (l) { return (6 + l) + ' 格'; } },
-  { id: 'knife', ic: '🥫', n: '增設裝罐機', d: '裝罐更快、裝罐機 +1', base: 45, mul: 1.60, max: 10,
-    val: function (l) { return (1 + l) + ' 台'; } },
+  { id: 'knife', ic: '🥫', n: '增設裝罐機', d: '裝罐更快、裝罐機 +1（最多 4 台）', base: 45, mul: 1.60, max: 4,
+    val: function (l) { return Math.min(4, 1 + l) + ' 台'; } },
   { id: 'price', ic: '🗣️', n: '好口條', d: '罐頭價 +8%', base: 50, mul: 1.65, max: 14,
     val: function (l) { return '×' + (Math.pow(1.08, l)).toFixed(2); } },
   { id: 'sign', ic: '📣', n: '招牌', d: '客人上限 +1、來客更快更多', base: 80, mul: 1.70, max: 10,
@@ -186,7 +195,7 @@ function D() {                              // 由等級推導出的數值
   f.harvestTime = 0.55;
   f.chopTime = 0.70 / Math.pow(1.15, lv('knife'));
   f.shelfTime = 0.22;
-  f.boards = Math.min(3, 1 + lv('knife'));
+  f.boards = Math.min(4, 1 + lv('knife'));
   f.price = 6 * Math.pow(1.08, lv('price')) * Math.pow(1.03, lv('sign'));
   f.qmax = 2 + lv('sign');
   f.custGap = Math.max(1.0, 3.5 / (1 + 0.30 * lv('sign')));
@@ -667,31 +676,36 @@ function drawPanel() {
 
     var cy = r.y + r.h / 2;
     ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-    ctx.font = '700 24px system-ui,"Noto Sans TC",sans-serif';
+    ctx.font = '600 24px system-ui,"Noto Sans TC",sans-serif';
     ctx.fillText(u.ic, r.x + 8, cy - 2);
-    ctx.font = '800 ' + Math.min(17, r.h * 0.34) + 'px system-ui,"Noto Sans TC",sans-serif';
+    ctx.font = '600 ' + Math.min(16.5, r.h * 0.33) + 'px system-ui,"Noto Sans TC",sans-serif';
     ctx.fillStyle = '#42311a';
-    ctx.fillText(u.n, r.x + 40, r.y + r.h * 0.32);
-    ctx.font = '600 ' + Math.min(12.5, r.h * 0.24) + 'px system-ui,"Noto Sans TC",sans-serif';
+    ctx.fillText(u.n, r.x + 40, r.y + r.h * 0.31);
+    ctx.font = '500 ' + Math.min(12, r.h * 0.23) + 'px system-ui,"Noto Sans TC",sans-serif';
     ctx.fillStyle = '#7a6647';
-    ctx.fillText(u.d, r.x + 40, r.y + r.h * 0.70);
+    ctx.fillText(u.d, r.x + 40, r.y + r.h * 0.69);
 
-    var bx = r.x + r.w - 96;
-    ctx.textAlign = 'center';
-    ctx.fillStyle = maxed ? '#8d8878' : '#c08b2a';
-    ctx.font = '800 ' + Math.min(15, r.h * 0.3) + 'px system-ui,"Noto Sans TC",sans-serif';
-    if (maxed) { ctx.fillText('MAX', bx + 48, cy); }
-    else { ctx.fillText('$' + fmt(c), bx + 48, cy); }
-
+    var bx = r.x + r.w - 98;
+    // 等級／數值靠右對齊，免得和價格徽章疊在一起
+    ctx.textAlign = 'right';
     ctx.fillStyle = '#8f7a58';
-    ctx.font = '700 ' + Math.min(12, r.h * 0.23) + 'px system-ui,"Noto Sans TC",sans-serif';
-    ctx.fillText('Lv' + l + '  ' + u.val(l), r.x + r.w - 108, r.y + r.h * 0.24);
+    ctx.font = '500 ' + Math.min(11.5, r.h * 0.22) + 'px system-ui,"Noto Sans TC",sans-serif';
+    ctx.fillText('Lv' + l + '  ' + u.val(l), r.x + r.w - 106, r.y + r.h * 0.27);
     if (!maxed) {
       ctx.fillStyle = '#5b7a3a';
-      ctx.fillText('→ ' + (u.id === 'worker' ? (l + 1) + ' 位' : u.val(l + 1)), r.x + r.w - 108, r.y + r.h * 0.72);
+      ctx.fillText('→ ' + u.val(l + 1), r.x + r.w - 106, r.y + r.h * 0.73);
+    }
+    ctx.textAlign = 'center';
+    if (maxed) {
+      ctx.fillStyle = '#8d8878';
+      ctx.font = '600 ' + Math.min(15, r.h * 0.3) + 'px system-ui,"Noto Sans TC",sans-serif';
+      ctx.fillText('MAX', bx + 46, cy);
+    } else {
       ctx.fillStyle = can ? '#f0b429' : '#c9c1b0';
-      rr(bx, cy - 15, 96, 30, 15); ctx.fill();
-      txt('$' + fmt(c), bx + 48, cy, 15, can ? '#4a3308' : '#8d8878');
+      rr(bx, cy - 15, 92, 30, 15); ctx.fill();
+      ctx.font = '600 15px system-ui,"Noto Sans TC",sans-serif';
+      ctx.fillStyle = can ? '#4a3308' : '#8d8878';
+      ctx.fillText('$' + fmt(c), bx + 46, cy);
     }
   }
   var cb = PANEL.closeBtn;
@@ -873,23 +887,38 @@ function cornIcon(x, y, sc) {           // 一根玉米（收成物／切好的�
   }
   ctx.restore();
 }
-function drawCan(x, y, sc) {            // 一罐玉米罐頭
+function drawCan(x, y, sc) {            // 一罐玉米罐頭（米白標籤＋玉米穗圖，不要畫得像番茄罐）
   ctx.save();
   ctx.translate(x, y);
   var w = 9 * sc, h = 12 * sc;
-  ctx.fillStyle = '#d3dae2';
+  ctx.fillStyle = '#dfe6ee';
   rr(-w / 2, -h / 2, w, h, 2.6 * sc); ctx.fill();
-  ctx.fillStyle = '#b6c0cb';
-  rr(-w / 2, -h / 2, w, h * 0.17, 2.2 * sc); ctx.fill();
-  rr(-w / 2, h / 2 - h * 0.17, w, h * 0.17, 2.2 * sc); ctx.fill();
-  ctx.fillStyle = '#f2c33d';
-  rr(-w / 2, -h * 0.28, w, h * 0.56, 1.4 * sc); ctx.fill();
-  ctx.fillStyle = '#e0a92c';
-  ctx.beginPath(); ctx.arc(0, 0, 1.7 * sc, 0, 7); ctx.fill();
-  ctx.fillStyle = '#c98f1c';
-  ctx.beginPath(); ctx.arc(0, 0, 0.8 * sc, 0, 7); ctx.fill();
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  rr(-w / 2 + 1.3 * sc, -h / 2 + 1.6 * sc, 1.5 * sc, h - 3.2 * sc, 0.8 * sc); ctx.fill();
+  ctx.fillStyle = '#b3bdc9';
+  rr(-w / 2, -h / 2, w, h * 0.15, 2.2 * sc); ctx.fill();
+  rr(-w / 2, h / 2 - h * 0.15, w, h * 0.15, 2.2 * sc); ctx.fill();
+  // 標籤：米白底＋上下綠色品牌帶
+  ctx.fillStyle = '#fdf8e6';
+  rr(-w / 2 + 0.5 * sc, -h * 0.30, w - sc, h * 0.60, 1.1 * sc); ctx.fill();
+  ctx.fillStyle = '#4f9a3f';
+  rr(-w / 2 + 0.5 * sc, -h * 0.30, w - sc, h * 0.075, 0.6 * sc); ctx.fill();
+  rr(-w / 2 + 0.5 * sc, h * 0.225, w - sc, h * 0.075, 0.6 * sc); ctx.fill();
+  // 標籤上的玉米穗：黃色穗身＋玉米粒＋兩片綠葉（放大一點，小尺寸才看得出是玉米）
+  var cbw = 3.6 * sc, cbh = 6.4 * sc;
+  ctx.fillStyle = '#5fb03a';
+  ctx.beginPath(); ctx.ellipse(-cbw * 0.82, cbh * 0.30, 2.0 * sc, 1.15 * sc, -0.65, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(cbw * 0.82, cbh * 0.30, 2.0 * sc, 1.15 * sc, 0.65, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f0be2c';
+  rr(-cbw / 2, -cbh * 0.60, cbw, cbh, 1.4 * sc); ctx.fill();
+  ctx.fillStyle = '#d9a521';
+  for (var kr = 0; kr < 4; kr++) {
+    for (var kc = 0; kc < 2; kc++) {
+      ctx.beginPath();
+      ctx.arc(-cbw * 0.24 + kc * cbw * 0.48, -cbh * 0.46 + kr * cbh * 0.28, 0.5 * sc, 0, 7);
+      ctx.fill();
+    }
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  rr(-w / 2 + 1.1 * sc, -h / 2 + 1.5 * sc, 1.2 * sc, h - 3 * sc, 0.6 * sc); ctx.fill();
   ctx.restore();
 }
 function drawCorn(cx, by, sc, mature, grow) {
@@ -953,8 +982,11 @@ function drawWorkbench(x, y, w, hot, working) {   // y = 桌面高度基準
   ctx.strokeStyle = 'rgba(120,80,40,0.35)'; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(x + 6, y - 6); ctx.lineTo(x + w - 6, y - 6); ctx.stroke();
   // 裝罐機（金屬機身＋漏斗＋壓頭）
-  var mw = Math.min(w - 16, 48), mx = x + w / 2 - mw / 2, my = y - 20;
-  var pr = working ? Math.abs(Math.sin(S.t * 9)) : 0;
+  var mw = Math.min(w - 2, 48), mx = x + w / 2 - mw / 2, my = y - 20;
+  var ms = Math.min(1, mw / 40);        // 裝罐機變多時整台等比縮小，比例才不會走鐘
+  var pr = working ? Math.abs(Math.sin(S.t * (9 + lv('knife') * 2))) : 0;
+  ctx.save();
+  ctx.translate(mx + mw / 2, my + 3); ctx.scale(ms, ms); ctx.translate(-(mx + mw / 2), -(my + 3));
   ctx.fillStyle = '#6f7883';
   ctx.beginPath();
   ctx.moveTo(mx + 5, my - 48); ctx.lineTo(mx + mw - 5, my - 48);
@@ -974,6 +1006,7 @@ function drawWorkbench(x, y, w, hot, working) {   // y = 桌面高度基準
   ctx.fillStyle = working ? '#ffd34d' : '#e6ecf2';
   ctx.beginPath(); ctx.arc(mx + 9, my - 24, 2.2, 0, 7); ctx.fill();
   ctx.fillStyle = '#5b636d'; rr(mx + mw / 2 - 9, my - 3, 18, 5, 2); ctx.fill();
+  ctx.restore();
 }
 function drawBoard(hot) {
   var z = zone('board'); if (!z) { return; }
@@ -982,20 +1015,22 @@ function drawBoard(hot) {
   zoneGlow(z, hot);
   tuft(z.x + 12, z.y + z.h - 8, 1); tuft(z.x + z.w - 16, z.y + z.h - 10, 1.1);
   tuft(z.x + z.w * 0.5 - 6, z.y + 38, 0.8);
-  var bw = Math.min((z.w - 40) / n, 104);
-  var total = n * bw + (n - 1) * 14;
+  var gapx = n > 2 ? 10 : 14;                       // 機器多時把間距縮小，才不會擠出格子外
+  var bw = Math.min((z.w - 20 - (n - 1) * gapx) / n, 104);
+  var total = n * bw + (n - 1) * gapx;
   var sx = z.x + Math.max(10, (z.w - total) / 2);
   var topY = z.y + 74;
   for (var i = 0; i < n; i++) {
-    var bx = sx + i * (bw + 14);
+    var bx = sx + i * (bw + gapx);
     drawWorkbench(bx, topY, bw, hot, working);
     // 進料：還沒裝罐的玉米排在左邊桌上
-    var show = Math.min(S.crop, 4);
-    for (var k = 0; k < show; k++) { cornIcon(bx + 13 + k * 11, topY - 9, 0.5); }
-    if (S.crop > 4 && i === 0) { txt('+' + (S.crop - 4), bx + 4, topY - 22, 11, '#ffe680'); }
+    var fit = Math.max(1, Math.floor((bw - 14) / 10));   // 桌子變窄時少放幾根，免得超出桌緣
+    var show = Math.min(S.crop, fit);
+    for (var k = 0; k < show; k++) { cornIcon(bx + 9 + k * 10, topY - 9, 0.46); }
+    if (S.crop > fit && i === 0) { txt('+' + (S.crop - fit), bx + bw / 2, topY - 26, 11, '#ffe680'); }
     // 出料：裝好的罐頭排在右邊桌上
-    var cn = Math.min(S.veg, 4);
-    for (var c2 = 0; c2 < cn; c2++) { drawCan(bx + bw - 13 - c2 * 11, topY - 10, 0.5); }
+    var cn = Math.min(S.veg, fit);
+    for (var c2 = 0; c2 < cn; c2++) { drawCan(bx + bw - 9 - c2 * 10, topY - 10, 0.46); }
   }
   // 罐頭木箱（裝好的罐頭）
   var bsx = z.x + z.w * 0.5 + 22, bsy = topY + 42;
@@ -1185,7 +1220,7 @@ function drawPlayer() {
   // 動作提示：名稱 + 還剩多少 + 進度條（比原本的圈圈清楚）
   if (S.actName) {
     var label = S.actName + (S.actSub ? '・' + S.actSub : '');
-    ctx.font = '800 13px system-ui,"Noto Sans TC",sans-serif';
+    ctx.font = '600 13px system-ui,"Noto Sans TC",sans-serif';
     var lw = ctx.measureText(label).width;
     var bw2 = Math.max(112, lw + 26), bh2 = 30;
     var bx2 = clamp(P.x - bw2 / 2, 6, Math.max(6, W - bw2 - 6));
@@ -1279,9 +1314,9 @@ function drawHUD() {
   }
   var incS = '$' + fmt(hudCache) + '/分';
   var cfs = cs.length > 8 ? 17 : 21;
-  ctx.font = '800 ' + cfs + 'px system-ui,"Noto Sans TC",sans-serif';
+  ctx.font = '600 ' + cfs + 'px system-ui,"Noto Sans TC",sans-serif';
   var cw = ctx.measureText(cs).width;
-  ctx.font = '700 11px system-ui,"Noto Sans TC",sans-serif';
+  ctx.font = '500 11px system-ui,"Noto Sans TC",sans-serif';
   var iw = ctx.measureText(incS).width;
   var pad2 = Math.max(10, W * 0.035);
   var availW = W - 2 * pad2 - 138;
