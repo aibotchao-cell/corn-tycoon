@@ -1,0 +1,1522 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#6db35a">
+<title>玉米罐頭大亨</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#3f6b34;
+  touch-action:none;overscroll-behavior:none;user-select:none;-webkit-user-select:none;
+  font-family:system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif;}
+canvas{display:block;width:100%;height:100%;touch-action:none;}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<script>
+'use strict';
+/* ============================================================
+   《菜菜大亨》 — 單檔手機 canvas 遊戲
+   收成 → 切菜 → 上架 → 客人上門買 → 升級（工人/砧板/客人/自動化）
+   ============================================================ */
+
+var cv = document.getElementById('cv');
+var ctx = cv.getContext('2d');
+var W = 0, H = 0, DPR = 1;
+var ZONES = [], BTN = [], TREES = [], POND = null, GRASS = [];
+
+/* ---------------- 工具 ---------------- */
+function rnd(a, b) { return a + Math.random() * (b - a); }
+function pick(a) { return a[(Math.random() * a.length) | 0]; }
+function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+function rr(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+function fmt(n) {
+  n = Math.floor(n);
+  if (n >= 1000000) { return (n / 1000000).toFixed(2) + 'M'; }
+  if (n >= 10000) { return (n / 1000).toFixed(1) + 'K'; }
+  return String(n);
+}
+function txt(s, x, y, size, color, align, weight) {
+  ctx.font = (weight || '700') + ' ' + size + 'px system-ui,-apple-system,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif';
+  ctx.textAlign = align || 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = Math.max(2, size * 0.16);
+  ctx.strokeStyle = 'rgba(28,44,22,0.75)';
+  ctx.lineJoin = 'round';
+  ctx.strokeText(s, x, y);
+  ctx.fillStyle = color || '#fff';
+  ctx.fillText(s, x, y);
+}
+
+/* ---------------- 音效 ---------------- */
+var AUD = { on: true, musOn: true, ctx: null };
+function AC() {
+  if (!AUD.ctx) {
+    var C = window.AudioContext || window.webkitAudioContext;
+    if (!C) { return null; }
+    AUD.ctx = new C();
+  }
+  if (AUD.ctx.state === 'suspended') { AUD.ctx.resume(); }
+  return AUD.ctx;
+}
+function tone(freq, when, dur, type, vol, slideTo) {
+  var a = AC(); if (!a || !AUD.on) { return; }
+  var o = a.createOscillator(), g = a.createGain();
+  o.type = type || 'sine';
+  o.frequency.setValueAtTime(freq, when);
+  if (slideTo) { o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), when + dur); }
+  g.gain.setValueAtTime(0.0001, when);
+  g.gain.exponentialRampToValueAtTime(vol || 0.14, when + 0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+  o.connect(g); g.connect(a.destination);
+  o.start(when); o.stop(when + dur + 0.03);
+}
+function noise(dur, freq, vol, when) {
+  var a = AC(); if (!a || !AUD.on) { return; }
+  var t = when || a.currentTime;
+  var n = Math.floor(a.sampleRate * dur);
+  var buf = a.createBuffer(1, n, a.sampleRate);
+  var d = buf.getChannelData(0);
+  for (var i = 0; i < n; i++) { d[i] = (Math.random() * 2 - 1) * (1 - i / n); }
+  var s = a.createBufferSource(); s.buffer = buf;
+  var f = a.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq || 1200;
+  var g = a.createGain(); g.gain.value = vol || 0.2;
+  s.connect(f); f.connect(g); g.connect(a.destination);
+  s.start(t);
+}
+function sHarvest() { var a = AC(); if (!a) { return; } tone(560, a.currentTime, 0.12, 'sine', 0.13, 900); }
+function sChop() { var a = AC(); if (!a) { return; } noise(0.10, 900, 0.18, a.currentTime); tone(180, a.currentTime, 0.09, 'square', 0.07, 110); }
+function sCoin() { var a = AC(); if (!a) { return; } tone(1050, a.currentTime, 0.09, 'square', 0.07); tone(1560, a.currentTime + 0.07, 0.14, 'square', 0.06); }
+function sUp() {
+  var a = AC(); if (!a) { return; }
+  var base = a.currentTime, f = [523, 659, 784, 1046];
+  for (var i = 0; i < f.length; i++) { tone(f[i], base + i * 0.075, 0.24, 'triangle', 0.11); }
+}
+function sNo() { var a = AC(); if (!a) { return; } tone(150, a.currentTime, 0.16, 'sawtooth', 0.09, 90); }
+function sCust() { var a = AC(); if (!a) { return; } tone(880, a.currentTime, 0.07, 'triangle', 0.05, 660); }
+function sBell() { var a = AC(); if (!a) { return; } tone(1318, a.currentTime, 0.5, 'sine', 0.07); tone(1976, a.currentTime + 0.02, 0.4, 'sine', 0.04); }
+
+var MUS = { next: 0, i: 0 };
+var MEL = [0, 4, 7, 4, 0, -3, 0, 4];
+function musTick() {
+  var a = AUD.ctx;
+  if (!a || !AUD.musOn || !AUD.on || S.paused || !S.started) { return; }
+  var t = a.currentTime;
+  if (MUS.next < t) { MUS.next = t + 0.06; }
+  while (MUS.next < t + 0.5) {
+    var n = MEL[MUS.i % MEL.length];
+    tone(261.6 * Math.pow(2, n / 12), MUS.next, 0.30, 'triangle', 0.035);
+    if (MUS.i % 4 === 0) { tone(65.4 * Math.pow(2, MEL[(MUS.i >> 2) % MEL.length] / 24), MUS.next, 0.7, 'sine', 0.05); }
+    if (MUS.i % 8 === 4) { noise(0.04, 3000, 0.03, MUS.next); }
+    MUS.i++; MUS.next += 0.30;
+  }
+}
+setInterval(musTick, 120);
+
+/* ---------------- 升級表 ---------------- */
+var UPGS = [
+  { id: 'speed', ic: '👟', n: '草鞋', d: '移動速度 +12%', base: 30, mul: 1.55, max: 10,
+    val: function (l) { return '×' + (Math.pow(1.12, l)).toFixed(2); } },
+  { id: 'bag', ic: '🎒', n: '背包', d: '背包容量 +2', base: 25, mul: 1.55, max: 12,
+    val: function (l) { return (6 + 2 * l) + ' 格'; } },
+  { id: 'field', ic: '🌱', n: '肥沃土壤', d: '玉米長更快、田 +1 格', base: 40, mul: 1.60, max: 12,
+    val: function (l) { return (6 + l) + ' 格'; } },
+  { id: 'knife', ic: '🥫', n: '增設裝罐機', d: '裝罐更快、裝罐機 +1', base: 45, mul: 1.60, max: 10,
+    val: function (l) { return (1 + l) + ' 台'; } },
+  { id: 'price', ic: '🗣️', n: '好口條', d: '罐頭價 +8%', base: 50, mul: 1.65, max: 14,
+    val: function (l) { return '×' + (Math.pow(1.08, l)).toFixed(2); } },
+  { id: 'sign', ic: '📣', n: '招牌', d: '客人上限 +1、來客更快更多', base: 80, mul: 1.70, max: 10,
+    val: function (l) { return (2 + l) + ' 位'; } },
+  { id: 'market', ic: '⏱️', n: '市場通路', d: '客人買罐頭速度 +25%', base: 120, mul: 1.60, max: 10,
+    val: function (l) { return '×' + (Math.pow(1.25, l)).toFixed(2); } },
+  { id: 'autoFarm', ic: '🚜', n: '自動收割', d: '收割機自己下田收玉米', base: 150, mul: 1.80, max: 6,
+    val: function (l) { return l + ' 台'; } },
+  { id: 'autoCan', ic: '⚙️', n: '自動裝罐', d: '輸送帶＋裝罐機：玉米自動變罐頭', base: 260, mul: 1.85, max: 6,
+    val: function (l) { return l + ' 台'; } },
+  { id: 'autoSell', ic: '🚚', n: '自動運去賣', d: '輸送帶＋搬運車：罐頭自動上架', base: 380, mul: 1.90, max: 6,
+    val: function (l) { return l + ' 台'; } },
+  { id: 'carry', ic: '💪', n: '快手', d: '動作一次多做 +1（自動化也適用）', base: 250, mul: 2.00, max: 6,
+    val: function (l) { return '一次 ' + (1 + l) + ' 個'; } }
+];
+function U(id) { for (var i = 0; i < UPGS.length; i++) { if (UPGS[i].id === id) { return UPGS[i]; } } return null; }
+
+/* ---------------- 狀態 ---------------- */
+var WCOL = ['#4f7fd4', '#c96ad0', '#e0b13d', '#4fb7a4', '#d4694f', '#7a6fd4'];
+var S = {
+  started: false, paused: false, shopOpen: false, inShop: false,
+  coins: 0, totalEarned: 0,
+  crop: 0, veg: 0, stallStock: 0,
+  fieldReady: 6, harvestT: 0,
+  L: {},                       // 升級等級
+  workers: [], customers: [], bA: [], bB: [], bAT: 0, bBT: 0,
+  autoH: 0, autoC: 0, autoS: 0,
+  custTimer: 2.5, actName: '', actT: 0, actNeed: 1,
+  earn: [],                    // 每分鐘收入
+  resetArm: 0,
+  t: 0
+};
+function lv(id) { return S.L[id] || 0; }
+function D() {                              // 由等級推導出的數值
+  var f = {};
+  f.spd = 88 * Math.pow(1.12, lv('speed'));
+  f.bag = 6 + 2 * lv('bag');
+  f.fieldMax = 6 + lv('field');
+  f.fieldRate = (1 / 0.70) * (1 + 0.12 * lv('field'));
+  f.harvestTime = 0.55;
+  f.chopTime = 0.70 / Math.pow(1.15, lv('knife'));
+  f.shelfTime = 0.22;
+  f.boards = Math.min(3, 1 + lv('knife'));
+  f.price = 6 * Math.pow(1.08, lv('price')) * Math.pow(1.03, lv('sign'));
+  f.qmax = 2 + lv('sign');
+  f.custGap = Math.max(1.0, 3.5 / (1 + 0.30 * lv('sign')));
+  f.eatTime = 0.75 / Math.pow(1.25, lv('market'));
+  f.carry = 1 + lv('carry');
+  return f;
+}
+function cost(u) { return Math.floor(u.base * Math.pow(u.mul, lv(u.id))); }
+function space() { return D().bag - S.crop - S.veg; }
+
+/* ---------------- 特效 ---------------- */
+var FX = [];
+function popText(x, y, s, color, size) {
+  FX.push({ k: 't', x: x, y: y, vy: -42, life: 1.1, max: 1.1, s: s, c: color || '#fff', sz: size || 20 });
+}
+function puff(x, y, c) {
+  FX.push({ k: 'p', x: x, y: y, vx: rnd(-40, 40), vy: rnd(-60, -10), life: 0.5, max: 0.5, c: c || '#e8f0d8', r: rnd(3, 6) });
+}
+function ring(x, y, c) { FX.push({ k: 'r', x: x, y: y, life: 0.45, max: 0.45, c: c || '#ffe28a', r0: 6, r1: 42 }); }
+function updateFX(dt) {
+  for (var i = FX.length - 1; i >= 0; i--) {
+    var f = FX[i];
+    f.life -= dt;
+    if (f.k === 't') { f.y += f.vy * dt; f.vy += 34 * dt; }
+    if (f.k === 'p') { f.x += f.vx * dt; f.y += f.vy * dt; f.vy += 60 * dt; }
+    if (f.life <= 0) { FX.splice(i, 1); }
+  }
+}
+function drawFX() {
+  for (var i = 0; i < FX.length; i++) {
+    var f = FX[i], a = f.life / f.max;
+    ctx.globalAlpha = clamp(a, 0, 1);
+    if (f.k === 't') { txt(f.s, f.x, f.y, f.sz, f.c); }
+    else if (f.k === 'p') { ctx.fillStyle = f.c; ctx.beginPath(); ctx.arc(f.x, f.y, f.r * a, 0, 7); ctx.fill(); }
+    else {
+      ctx.strokeStyle = f.c; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(f.x, f.y, f.r0 + (f.r1 - f.r0) * (1 - a), 0, 7); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+function resize() {
+  DPR = Math.min(2.5, window.devicePixelRatio || 1);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  cv.width = Math.round(W * DPR);
+  cv.height = Math.round(H * DPR);
+  cv.style.width = W + 'px';
+  cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  layout();
+  buildPlots(D().fieldMax);
+  if (S.shopOpen) { panelLayout(); }   // 轉向／縮放時面板位置要重算
+}
+
+/* ---------------- 佈局 ---------------- */
+function rec(id, x, y, w, h, label, ic) { return { id: id, x: x, y: y, w: w, h: h, label: label, ic: ic }; }
+function layout() {
+  var pad = Math.max(10, W * 0.035);
+  var top = Math.max(78, H * 0.125);
+  var gap = H * 0.032;
+  var r1 = H * 0.185, r2 = H * 0.165;
+  ZONES = [
+    rec('field', pad, top, W * 0.40, r1, '田地', '🌾'),
+    rec('board', W * 0.50, top, W * 0.46, r1, '裝罐廠', '🥫'),
+    rec('shop', pad, top + r1 + gap, W * 0.40, r2, '雜貨店', '🛒'),
+    rec('stall', W * 0.50, top + r1 + gap, W * 0.46, r2, '攤位', '🏪')
+  ];
+  BTN = [
+    { id: 'pause', x: W - pad - 44, y: Math.max(10, H * 0.028), w: 44, h: 44 },
+    { id: 'sfx', x: pad, y: Math.max(10, H * 0.028), w: 44, h: 44 },
+    { id: 'bgm', x: pad + 50, y: Math.max(10, H * 0.028), w: 44, h: 44 }
+  ];
+  P.setHome(W / 2, H * 0.60);
+  if (TREES.length === 0) {
+    for (var i = 0; i < 7; i++) {
+      TREES.push({ x: rnd(0.03, 0.97) * W, y: rnd(0.56, 0.90) * H, s: rnd(0.7, 1.15) });
+    }
+  }
+  POND = { x: W * 0.82, y: H * 0.80, r: W * 0.13 };
+  if (GRASS.length === 0) {
+    for (var g = 0; g < 110; g++) {
+      GRASS.push({ x: rnd(0.02, 0.98) * W, y: rnd(0.08, 0.99) * H, s: rnd(0.5, 1.1), c: rnd(0, 1) });
+    }
+  }
+  PLOTS_REBUILD = true;
+}
+function zoneSpot(id) {
+  for (var i = 0; i < ZONES.length; i++) {
+    var z = ZONES[i];
+    if (z.id === id) { return { x: z.x + z.w / 2, y: z.y + z.h - Math.min(26, z.h * 0.18) }; }
+  }
+  return { x: W / 2, y: H / 2 };
+}
+function zoneAt(x, y, inset) {
+  inset = inset === undefined ? 4 : inset;
+  for (var i = 0; i < ZONES.length; i++) {
+    var z = ZONES[i];
+    if (x > z.x + inset && x < z.x + z.w - inset && y > z.y + inset && y < z.y + z.h - inset) { return z; }
+  }
+  return null;
+}
+
+/* ---------------- 玩家 ---------------- */
+var P = {
+  x: 0, y: 0, home: { x: 0, y: 0 }, r: 15, dir: 1, act: 0,
+  tx: null, walk: false
+};
+P.setHome = function (x, y) {
+  if (!S.started || this.home.x === 0) {
+    this.x = x; this.y = y; this.home = { x: x, y: y };
+  } else {
+    this.x = clamp(this.x, 14, W - 14);
+    this.y = clamp(this.y, Math.max(72, H * 0.10), H - 16);
+  }
+};
+var joy = { on: false, ox: 0, oy: 0, x: 0, y: 0, id: null, sx: 0, sy: 0, st: 0, moved: false };
+
+function move(x, y) {
+  var z = ZONES.length ? ZONES[0] : null;
+  var mx = 14, my = 30;
+  P.x = clamp(x, mx, W - mx);
+  P.y = clamp(y, Math.max(72, H * 0.10), H - 16);
+}
+function updatePlayer(dt, d) {
+  var vx = 0, vy = 0;
+  if (joy.on) {
+    var dx = joy.x - joy.ox, dy = joy.y - joy.oy;
+    var m = Math.sqrt(dx * dx + dy * dy);
+    if (m > 6) { var k = Math.min(1, m / 60); vx = dx / m * k; vy = dy / m * k; }
+    P.tx = null;
+  } else if (P.tx) {
+    var ax = P.tx.x - P.x, ay = P.tx.y - P.y, am = Math.sqrt(ax * ax + ay * ay);
+    if (am < 6) { P.tx = null; } else { vx = ax / am; vy = ay / am; }
+  }
+  var sp = d.spd;
+  P.x += vx * sp * dt; P.y += vy * sp * dt;
+  P.walk = (vx !== 0 || vy !== 0);
+  if (Math.abs(vx) > 0.05) { P.dir = vx > 0 ? 1 : -1; }
+  if (P.walk) {
+    P.act += dt;
+    if (Math.random() < dt * 12) { puff(P.x - P.dir * 10, P.y, 'rgba(255,255,255,0.55)'); }
+  } else { P.act += dt * 0.5; }
+  move(P.x, P.y);
+}
+
+/* ---------------- 區域動作 ---------------- */
+function doZone(dt, d) {
+  var z = zoneAt(P.x, P.y);
+  S.actName = ''; S.actNeed = 1; S.actSub = '';
+  if (!z) { S.actT = Math.max(0, S.actT - dt * 2); S.inShop = false; return; }
+  // 雜貨店：只在「走進來的那一瞬間」開面板；關掉後還站在店裡不會又跳開（不然會出不來）
+  if (z.id === 'shop') {
+    if (!S.inShop) { S.inShop = true; openShop(); }
+    return;
+  }
+  S.inShop = false;
+
+  if (z.id === 'field') {
+    var sp = space();
+    if (sp <= 0) { S.actName = '背包滿了 → 去裝罐廠/攤位'; S.actT = 0; return; }
+    if (S.fieldReady < 1) { S.actName = '玉米長大中…'; S.actT = Math.max(0, S.actT - dt * 2); return; }
+    S.actName = '收成'; S.actNeed = d.harvestTime; S.actT += dt;
+    S.actSub = '田裡還有 ' + Math.floor(S.fieldReady) + ' 株';
+    if (S.actT >= S.actNeed) {
+      S.actT = 0;
+      var n = Math.min(d.carry, Math.floor(S.fieldReady), space());
+      S.fieldReady -= n; S.crop += n;
+      sHarvest(); ring(P.x, P.y - 34, '#d8f08a');
+      popText(P.x, P.y - 56, '+' + n + ' 🌽', '#eaffb0', 21);
+      puff(P.x - 12, P.y - 6, '#c9e88a'); puff(P.x + 12, P.y - 6, '#c9e88a');
+      if (S.fieldReady < 1) { popText(P.x, P.y - 78, '✓ 田裡的玉米收完了', '#d8ffb0', 17); sUp(); }
+    }
+    return;
+  }
+  if (z.id === 'board') {
+    if (S.crop < 1) { S.actName = '先去田裡收成'; S.actT = Math.max(0, S.actT - dt * 2); return; }
+    S.actName = '裝罐'; S.actNeed = d.chopTime; S.actT += dt;
+    S.actSub = '玉米 ' + S.crop + ' 根';
+    if (S.actT >= S.actNeed) {
+      S.actT = 0;
+      var n2 = Math.min(d.carry, S.crop);
+      S.crop -= n2; S.veg += n2;
+      sChop(); ring(P.x, P.y - 34, '#ffd88a');
+      popText(P.x, P.y - 56, '+' + n2 + ' 🥫', '#d6ffd0', 21);
+      puff(P.x, P.y - 20, '#cbb389');
+      if (S.crop < 1) { popText(P.x, P.y - 78, '✓ 玉米都裝成罐頭了', '#d6ffd0', 17); sUp(); }
+    }
+    return;
+  }
+  if (z.id === 'stall') {
+    if (S.veg < 1) { S.actName = '沒有罐頭可以上架'; S.actT = Math.max(0, S.actT - dt * 2); return; }
+    S.actName = '上架'; S.actNeed = d.shelfTime; S.actT += dt;
+    S.actSub = '罐頭 ' + S.veg + ' 罐';
+    if (S.actT >= S.actNeed) {
+      S.actT = 0;
+      var n3 = Math.min(d.carry + 2, S.veg);
+      S.veg -= n3; S.stallStock += n3;
+      sBell(); ring(P.x, P.y - 34, '#9ad7ff');
+      popText(P.x, P.y - 56, '上架 +' + n3, '#cfeaff', 20);
+      if (S.veg < 1) { popText(P.x, P.y - 78, '✓ 罐頭都上架了', '#cfeaff', 18); sUp(); }
+    }
+    return;
+  }
+}
+
+/* ---------------- 客人 ---------------- */
+function spawnCustomer() {
+  var d = D();
+  var fromLeft = Math.random() < 0.5;
+  var c = {
+    x: fromLeft ? -20 : W + 20,
+    y: H * rnd(0.52, 0.72),
+    col: pick(WCOL), skin: pick(['#f7d3ac', '#e8b98c', '#d9a066']),
+    st: 'walk', t: 0, slot: S.customers.length, bob: rnd(0, 6),
+    want: 2 + Math.floor(lv('sign') / 2)
+  };
+  S.customers.push(c);
+}
+function queueSlot(i) {
+  var z = null;
+  for (var k = 0; k < ZONES.length; k++) { if (ZONES[k].id === 'stall') { z = ZONES[k]; } }
+  if (!z) { z = { x: W * 0.6, y: H * 0.6, w: W * 0.3, h: H * 0.15 }; }
+  var per = 5;
+  return { x: z.x + z.w - 26 - (i % per) * 30, y: z.y + z.h + 20 + Math.floor(i / per) * 28 };
+}
+function updateCustomers(dt, d) {
+  S.custTimer -= dt;
+  if (S.custTimer <= 0 && S.customers.length < d.qmax) {
+    var batch = 1 + Math.floor(lv('sign') / 3);
+    for (var b = 0; b < batch && S.customers.length < d.qmax; b++) { spawnCustomer(); }
+    sCust();
+    S.custTimer = d.custGap * rnd(0.8, 1.2);
+  }
+  for (var i = S.customers.length - 1; i >= 0; i--) {
+    var c = S.customers[i];
+    if (c.st === 'walk') {
+      var q = queueSlot(i);
+      var ax = q.x - c.x, ay = q.y - c.y, m = Math.sqrt(ax * ax + ay * ay);
+      if (m < 5) { c.st = 'queue'; c.t = 0; } else { c.x += ax / m * 46 * dt; c.y += ay / m * 46 * dt; }
+    } else if (c.st === 'queue') {
+      var q2 = queueSlot(i);
+      c.x += (q2.x - c.x) * Math.min(1, dt * 4);
+      c.y += (q2.y - c.y) * Math.min(1, dt * 4);
+      c.t += dt;
+      if (S.stallStock >= 1) {
+        if (c.t > d.eatTime) {
+          var price = Math.round(d.price * (1 + 0.04 * S.customers.length));
+          S.stallStock -= 1;
+          S.coins += price; S.totalEarned += price;
+          S.earn.push([S.t, price]);
+          if (S.t - (S.sndT || 0) > 0.07) { sCoin(); S.sndT = S.t; }
+          popText(c.x, c.y - 40, '+$' + price, '#ffe680', 20);
+          ring(c.x, c.y - 18, '#ffe680');
+          c.want -= 1;
+          c.t = 0;
+          if (c.want <= 0) { c.st = 'leave'; }
+        }
+      } else { c.t = 0; }
+    } else {
+      c.t += dt;
+      c.y += 70 * dt; c.x += (c.x < W / 2 ? -1 : 1) * 20 * dt;
+      if (c.t > 1.2) { S.customers.splice(i, 1); }
+    }
+  }
+}
+
+/* ---------------- 自動化：收割機 / 裝罐機 / 搬運車（視覺）＋ 輸送帶 ---------------- */
+function makeWorker(type) {
+  return { type: type, x: 0, y: 0, ph: 0, t: rnd(0, 1.2), load: 0, bob: rnd(0, 6),
+    ox: rnd(-20, 20), oy: rnd(-8, 10), col: pick(WCOL), sp: rnd(0.85, 1.15) };
+}
+function syncWorkers() {
+  var want = { harvest: lv('autoFarm'), can: lv('autoCan'), sell: lv('autoSell') };
+  var have = { harvest: 0, can: 0, sell: 0 };
+  for (var i = 0; i < S.workers.length; i++) { have[S.workers[i].type] = (have[S.workers[i].type] || 0) + 1; }
+  for (var k in want) {
+    while (have[k] < want[k]) { var w = makeWorker(k); var s0 = zoneSpot(k === 'harvest' ? 'field' : (k === 'can' ? 'board' : 'stall')); w.x = s0.x + w.ox; w.y = s0.y + w.oy; S.workers.push(w); have[k]++; }
+    while (have[k] > want[k]) {
+      for (var j = S.workers.length - 1; j >= 0; j--) { if (S.workers[j].type === k) { S.workers.splice(j, 1); break; } }
+      have[k]--;
+    }
+  }
+}
+function updateWorkers(dt, d) {
+  var spots = { field: zoneSpot('field'), board: zoneSpot('board'), stall: zoneSpot('stall') };
+  for (var i = 0; i < S.workers.length; i++) {
+    var w = S.workers[i];
+    var A = w.type === 'harvest' ? spots.field : spots.board;      // 起點
+    var B = w.type === 'sell' ? spots.stall : spots.board;         // 終點
+    var base = w.ph === 0 ? A : B;
+    var tx = base.x + w.ox, ty = base.y + w.oy;
+    var ax = tx - w.x, ay = ty - w.y, m = Math.sqrt(ax * ax + ay * ay);
+    if (m > 5) {
+      var sp = Math.min(76, d.spd * 0.9) * w.sp;
+      w.x += ax / m * sp * dt; w.y += ay / m * sp * dt;
+      if (Math.random() < dt * 5) { puff(w.x, w.y + 2, 'rgba(255,255,255,0.35)'); }
+      w.t = 0;
+    } else {
+      w.t += dt;
+      var wait = w.type === 'harvest' ? 0.9 : (w.type === 'can' ? 0.6 : 0.5);
+      if (w.t >= wait) {
+        w.t = 0;
+        if (w.type === 'harvest') { w.load = w.ph === 0 ? 1 : 0; w.ph = w.ph === 0 ? 1 : 0; }
+        else if (w.type === 'sell') { w.load = w.ph === 0 ? 1 : 0; w.ph = w.ph === 0 ? 1 : 0; }
+        else { puff(w.x - 8, w.y - 26, 'rgba(255,220,120,0.5)'); }
+      }
+    }
+  }
+}
+function updateAuto(dt, d) {
+  var cap = d.bag;
+  // 自動收割：收割機把田裡的玉米收進背包
+  var af = lv('autoFarm');
+  if (af > 0 && S.fieldReady >= 1 && S.crop + S.veg < cap) {
+    S.autoH += dt * af * (0.55 + 0.12 * lv('carry'));
+    while (S.autoH >= 1 && S.fieldReady >= 1 && S.crop + S.veg < cap) { S.autoH -= 1; S.fieldReady -= 1; S.crop += 1; }
+  }
+  // 自動裝罐：輸送帶把玉米送進裝罐機 → 罐頭
+  var ac = lv('autoCan');
+  if (ac > 0 && S.crop >= 1) {
+    S.autoC += dt * ac * (0.50 + 0.12 * lv('carry'));
+    while (S.autoC >= 1 && S.crop >= 1) { S.autoC -= 1; S.crop -= 1; S.veg += 1; }
+  }
+  // 自動運去賣：搬運車把罐頭送上攤位
+  var as = lv('autoSell');
+  if (as > 0 && S.veg >= 1) {
+    S.autoS += dt * as * (0.55 + 0.12 * lv('carry'));
+    while (S.autoS >= 1 && S.veg >= 1) { S.autoS -= 1; S.veg -= 1; S.stallStock += 1; if (Math.random() < 0.5) { sBell(); } }
+  }
+}
+/* 輸送帶幾何：A = 田地→裝罐廠（橫）、B = 裝罐廠→攤位（直），兩條在裝罐廠下方轉角相接 */
+function beltGeom() {
+  var f = zone('field'), b = zone('board'), st = zone('stall');
+  if (!f || !b || !st) { return null; }
+  var ay = b.y + b.h - 14;
+  var bx = b.x + b.w * 0.32;
+  return {
+    a: { x1: f.x + f.w * 0.42, x2: bx, y: ay },
+    b: { x: bx, y1: ay, y2: st.y - 6 }
+  };
+}
+function updateBelts(dt, d) {
+  var g = beltGeom();
+  if (!g) { return; }
+  var ac = lv('autoCan'), as = lv('autoSell');
+  // 帶 A：玉米往裝罐廠跑
+  if (ac > 0) {
+    S.bAT += dt * (0.9 + 0.5 * ac);
+    while (S.bAT >= 1) { S.bAT -= 1; if (S.bA.length < 7 && (S.crop > 0 || S.fieldReady > 1)) { S.bA.push({ u: 0 }); } }
+    for (var i = S.bA.length - 1; i >= 0; i--) { S.bA[i].u += dt * 0.30; if (S.bA[i].u > 1) { S.bA.splice(i, 1); } }
+  } else if (S.bA.length) { S.bA.length = 0; }
+  // 帶 B：罐頭往攤位跑
+  if (as > 0) {
+    S.bBT += dt * (0.9 + 0.5 * as);
+    while (S.bBT >= 1) { S.bBT -= 1; if (S.bB.length < 6 && (S.veg > 0 || S.crop > 0)) { S.bB.push({ u: 0 }); } }
+    for (var j = S.bB.length - 1; j >= 0; j--) { S.bB[j].u += dt * 0.34; if (S.bB[j].u > 1) { S.bB.splice(j, 1); } }
+  } else if (S.bB.length) { S.bB.length = 0; }
+}
+function drawBeltSeg(x, y, len, vert) {
+  var w = 15;
+  var L = Math.max(10, len);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  if (vert) { rr(x - w / 2 + 2, y + 3, w, L, 6); } else { rr(x + 3, y - w / 2 + 2, L, w, 6); }
+  ctx.fill();
+  ctx.fillStyle = '#39404a';
+  if (vert) { rr(x - w / 2, y, w, L, 6); } else { rr(x, y - w / 2, L, w, 6); }
+  ctx.fill();
+  ctx.fillStyle = '#4d5763';
+  if (vert) { rr(x - w / 2 + 2, y + 2, w - 4, L - 4, 4); } else { rr(x + 2, y - w / 2 + 2, L - 4, w - 4, 4); }
+  ctx.fill();
+  // 滾輪
+  ctx.fillStyle = '#79838f';
+  for (var i = 6; i < L - 4; i += 13) {
+    if (vert) { ctx.beginPath(); ctx.arc(x, y + i, 2.3, 0, 7); ctx.fill(); }
+    else { ctx.beginPath(); ctx.arc(x + i, y, 2.3, 0, 7); ctx.fill(); }
+  }
+  // 動態履帶紋
+  var off = (S.t * 34) % 15;
+  ctx.strokeStyle = 'rgba(255,226,140,0.5)'; ctx.lineWidth = 2.4;
+  for (var k = -15; k < L + 15; k += 15) {
+    var p = k + off;
+    if (p < 3 || p > L - 6) { continue; }
+    ctx.beginPath();
+    if (vert) { ctx.moveTo(x - w / 2 + 3, y + p); ctx.lineTo(x + w / 2 - 3, y + p + 6); }
+    else { ctx.moveTo(x + p, y - w / 2 + 3); ctx.lineTo(x + p + 6, y + w / 2 - 3); }
+    ctx.stroke();
+  }
+}
+function drawBelts() {
+  var g = beltGeom();
+  if (!g) { return; }
+  var onA = lv('autoCan') > 0, onB = lv('autoSell') > 0;
+  if (onA) {
+    drawBeltSeg(g.a.x1, g.a.y, g.a.x2 - g.a.x1, false);
+    // 田邊的進料口
+    ctx.fillStyle = '#8a939e'; rr(g.a.x1 - 9, g.a.y - 15, 12, 30, 4); ctx.fill();
+    ctx.fillStyle = '#5d6670'; rr(g.a.x1 - 7, g.a.y - 12, 8, 24, 3); ctx.fill();
+  }
+  if (onB) {
+    drawBeltSeg(g.b.x, g.b.y1, g.b.y2 - g.b.y1, true);
+    // 攤位端的出料口
+    ctx.fillStyle = '#8a939e'; rr(g.b.x - 13, g.b.y2 - 8, 26, 12, 4); ctx.fill();
+    ctx.fillStyle = '#5d6670'; rr(g.b.x - 10, g.b.y2 - 6, 20, 8, 3); ctx.fill();
+  }
+  if (onA && onB) { ctx.fillStyle = '#4d5763'; rr(g.a.x2 - 9, g.a.y - 9, 18, 18, 5); ctx.fill(); }
+  // 帶上的東西
+  var i;
+  for (i = 0; i < S.bA.length; i++) {
+    var u = S.bA[i].u;
+    cornIcon(g.a.x1 + (g.a.x2 - g.a.x1) * u, g.a.y - 8, 1.0);
+  }
+  for (i = 0; i < S.bB.length; i++) {
+    var u2 = S.bB[i].u;
+    drawCan(g.b.x, g.b.y1 + (g.b.y2 - g.b.y1) * u2 - 7, 0.92);
+  }
+}
+/* ---------------- 商店面板 ---------------- */
+var PANEL = { x: 0, y: 0, w: 0, h: 0, rows: [], close: null, closeBtn: null, resetBtn: null };
+function panelLayout() {
+  PANEL.w = W * 0.92; PANEL.h = H * 0.86;
+  PANEL.x = (W - PANEL.w) / 2; PANEL.y = (H - PANEL.h) / 2;
+  var head = 54, foot = 46;
+  var n = UPGS.length;
+  var rh = (PANEL.h - head - foot) / n;
+  PANEL.rows = [];
+  for (var i = 0; i < n; i++) {
+    PANEL.rows.push({ i: i, x: PANEL.x + 10, y: PANEL.y + head + i * rh, w: PANEL.w - 20, h: rh - 5 });
+  }
+  PANEL.close = { x: PANEL.x + PANEL.w - 46, y: PANEL.y + 6, w: 40, h: 40 };
+  // 底部兩顆大按鈕：左邊「關閉」、右邊「重置」（避免她進去店裡找不到出口）
+  var footY = PANEL.y + PANEL.h - foot + 4, footH = foot - 8;
+  var cwb = Math.round((PANEL.w - 30) * 0.60);
+  PANEL.closeBtn = { x: PANEL.x + 10, y: footY, w: cwb, h: footH };
+  PANEL.resetBtn = { x: PANEL.x + 20 + cwb, y: footY, w: PANEL.w - 30 - cwb, h: footH };
+}
+function openShop() {
+  if (S.shopOpen) { return; }
+  S.shopOpen = true;
+  panelLayout();
+  S.actT = 0;
+}
+function closeShop() { S.shopOpen = false; S.resetArm = 0; }
+function buyU(u) {
+  var c = cost(u);
+  if (lv(u.id) >= u.max) { sNo(); return; }
+  if (S.coins < c) { sNo(); popText(W / 2, PANEL.y + PANEL.h - 70, '金幣不足', '#ff9a8a', 22); return; }
+  S.coins -= c;
+  S.L[u.id] = lv(u.id) + 1;
+  sUp();
+  panelLayout();
+  var d = D();
+  S.fieldReady = Math.min(S.fieldReady, d.fieldMax);
+  save();
+}
+function drawPanel() {
+  ctx.fillStyle = 'rgba(16,26,14,0.72)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fdf6e4';
+  rr(PANEL.x, PANEL.y, PANEL.w, PANEL.h, 18); ctx.fill();
+  ctx.strokeStyle = '#8b6237'; ctx.lineWidth = 4; ctx.stroke();
+
+  txt('🛒 雜貨店・升級', PANEL.x + PANEL.w / 2, PANEL.y + 30, 22, '#5a3b18');
+  var cl = PANEL.close;
+  ctx.fillStyle = '#e5d5b8'; rr(cl.x, cl.y, cl.w, cl.h, 10); ctx.fill();
+  // ✕ 自己畫線，避免字型沒有這個符號
+  ctx.strokeStyle = '#6b4a22'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  var ccx = cl.x + cl.w / 2, ccy = cl.y + cl.h / 2;
+  ctx.beginPath(); ctx.moveTo(ccx - 8, ccy - 8); ctx.lineTo(ccx + 8, ccy + 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(ccx + 8, ccy - 8); ctx.lineTo(ccx - 8, ccy + 8); ctx.stroke();
+
+  for (var i = 0; i < PANEL.rows.length; i++) {
+    var r = PANEL.rows[i], u = UPGS[r.i], l = lv(u.id), c = cost(u), maxed = l >= u.max, can = !maxed && S.coins >= c;
+    ctx.fillStyle = maxed ? '#dcd6c6' : (can ? '#e8f6d6' : '#f0e7d6');
+    rr(r.x, r.y, r.w, r.h, 12); ctx.fill();
+    ctx.strokeStyle = maxed ? '#b9b2a2' : (can ? '#6fae4a' : '#d8c9ae'); ctx.lineWidth = 2; ctx.stroke();
+
+    var cy = r.y + r.h / 2;
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = '700 24px system-ui,"Noto Sans TC",sans-serif';
+    ctx.fillText(u.ic, r.x + 8, cy - 2);
+    ctx.font = '800 ' + Math.min(17, r.h * 0.34) + 'px system-ui,"Noto Sans TC",sans-serif';
+    ctx.fillStyle = '#42311a';
+    ctx.fillText(u.n, r.x + 40, r.y + r.h * 0.32);
+    ctx.font = '600 ' + Math.min(12.5, r.h * 0.24) + 'px system-ui,"Noto Sans TC",sans-serif';
+    ctx.fillStyle = '#7a6647';
+    ctx.fillText(u.d, r.x + 40, r.y + r.h * 0.70);
+
+    var bx = r.x + r.w - 96;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = maxed ? '#8d8878' : '#c08b2a';
+    ctx.font = '800 ' + Math.min(15, r.h * 0.3) + 'px system-ui,"Noto Sans TC",sans-serif';
+    if (maxed) { ctx.fillText('MAX', bx + 48, cy); }
+    else { ctx.fillText('$' + fmt(c), bx + 48, cy); }
+
+    ctx.fillStyle = '#8f7a58';
+    ctx.font = '700 ' + Math.min(12, r.h * 0.23) + 'px system-ui,"Noto Sans TC",sans-serif';
+    ctx.fillText('Lv' + l + '  ' + u.val(l), r.x + r.w - 108, r.y + r.h * 0.24);
+    if (!maxed) {
+      ctx.fillStyle = '#5b7a3a';
+      ctx.fillText('→ ' + (u.id === 'worker' ? (l + 1) + ' 位' : u.val(l + 1)), r.x + r.w - 108, r.y + r.h * 0.72);
+      ctx.fillStyle = can ? '#f0b429' : '#c9c1b0';
+      rr(bx, cy - 15, 96, 30, 15); ctx.fill();
+      txt('$' + fmt(c), bx + 48, cy, 15, can ? '#4a3308' : '#8d8878');
+    }
+  }
+  var cb = PANEL.closeBtn;
+  ctx.fillStyle = '#8ce46a';
+  rr(cb.x, cb.y, cb.w, cb.h, 10); ctx.fill();
+  txt('關閉・回農場', cb.x + cb.w / 2, cb.y + cb.h / 2, 16, '#22401a');
+  var rb = PANEL.resetBtn;
+  ctx.fillStyle = S.resetArm ? '#f0b0a0' : '#e9ddc6';
+  rr(rb.x, rb.y, rb.w, rb.h, 10); ctx.fill();
+  txt(S.resetArm ? '確定重置' : '重置遊戲', rb.x + rb.w / 2, rb.y + rb.h / 2, 14, S.resetArm ? '#8c2b1c' : '#8a7a5c');
+}
+
+/* ---------------- 存檔 ---------------- */
+var KEY = 'caicai_v1';
+function save() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify({
+      coins: S.coins, tot: S.totalEarned, crop: S.crop, veg: S.veg, stock: S.stallStock,
+      fr: S.fieldReady, L: S.L, sfx: AUD.on, bgm: AUD.musOn
+    }));
+  } catch (e) { }
+}
+function load() {
+  try {
+    var r = localStorage.getItem(KEY);
+    if (!r) { return; }
+    var o = JSON.parse(r);
+    S.coins = o.coins || 0; S.totalEarned = o.tot || 0;
+    S.crop = o.crop || 0; S.veg = o.veg || 0; S.stallStock = o.stock || 0;
+    S.fieldReady = o.fr === undefined ? 6 : o.fr;
+    S.L = o.L || {};
+    // 舊存檔：工人 → 三段自動化
+    if (S.L.worker) { S.L.autoFarm = S.L.autoFarm || S.L.worker; S.L.autoCan = S.L.autoCan || S.L.worker; S.L.autoSell = S.L.autoSell || S.L.worker; delete S.L.worker; }
+    AUD.on = o.sfx !== false; AUD.musOn = o.bgm !== false;
+    syncWorkers();
+  } catch (e) { }
+}
+function resetAll() {
+  try { localStorage.removeItem(KEY); } catch (e) { }
+  S.coins = 0; S.totalEarned = 0; S.crop = 0; S.veg = 0; S.stallStock = 0;
+  S.L = {}; S.workers = []; S.customers = []; S.earn = []; S.bA = []; S.bB = [];
+  S.fieldReady = 6; S.actT = 0; S.custTimer = 2;
+  S.resetArm = 0; S.shopOpen = false;
+  ring(W / 2, H / 2, '#ffffff');
+  popText(W / 2, H / 2, '重新開始！', '#fff', 26);
+}
+
+/* ---------------- 更新 ---------------- */
+var PLOTS_REBUILD = false, PLOTS = [];
+function update(dt) {
+  S.t += dt;
+  var d = D();
+  updatePlayer(dt, d);
+  doZone(dt, d);
+  syncWorkers();
+  updateWorkers(dt, d);
+  updateAuto(dt, d);
+  updateBelts(dt, d);
+  updateCustomers(dt, d);
+  S.fieldReady = Math.min(d.fieldMax, S.fieldReady + d.fieldRate * dt);
+  if (PLOTS.length !== d.fieldMax) { buildPlots(d.fieldMax); }
+  var now = S.t;
+  for (var i = S.earn.length - 1; i >= 0; i--) { if (now - S.earn[i][0] > 60) { S.earn.splice(i, 1); } }
+  updateFX(dt);
+  if (Math.floor(S.t * 2) !== Math.floor((S.t - dt) * 2)) { hudCache = null; }
+  if (Math.random() < dt * 0.4 && S.fieldReady > 0.5) { puff(zoneSpot('field').x + rnd(-30, 30), zoneSpot('field').y - 10, 'rgba(220,255,180,0.5)'); }
+}
+function buildPlots(n) {
+  PLOTS = [];
+  var z = null;
+  for (var i = 0; i < ZONES.length; i++) { if (ZONES[i].id === 'field') { z = ZONES[i]; } }
+  if (!z) { return; }
+  var cols = 3, rows = Math.ceil(n / cols);
+  var pw = (z.w - 24) / cols, ph = (z.h - 52) / rows;
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      var idx = r * cols + c;
+      if (idx >= n) { continue; }
+      PLOTS.push({ x: z.x + 12 + c * pw, y: z.y + 40 + r * ph, w: pw - 6, h: ph - 6 });
+    }
+  }
+}
+
+/* ---------------- 繪圖：場景 ---------------- */
+function drawGround() {
+  ctx.fillStyle = '#79bf62';
+  ctx.fillRect(0, 0, W, H);
+  var t = 40;
+  // 草皮：散落的草點（不要棋盤格，不然整片看起來像格子）
+  for (var gi = 0; gi < GRASS.length; gi++) {
+    var gr = GRASS[gi];
+    ctx.strokeStyle = gr.c > 0.5 ? 'rgba(58,120,46,0.30)' : 'rgba(214,236,180,0.22)';
+    ctx.lineWidth = 2; ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(gr.x, gr.y);
+    ctx.lineTo(gr.x + 2 * gr.s, gr.y - 6 * gr.s);
+    ctx.stroke();
+  }
+  // 池塘
+  if (POND) {
+    ctx.fillStyle = '#5aa8d8'; ctx.beginPath(); ctx.ellipse(POND.x, POND.y, POND.r, POND.r * 0.62, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.28)'; ctx.beginPath(); ctx.ellipse(POND.x - POND.r * 0.25, POND.y - POND.r * 0.15, POND.r * 0.45, POND.r * 0.18, 0, 0, 7); ctx.fill();
+  }
+  // 樹
+  for (var i = 0; i < TREES.length; i++) {
+    var tr = TREES[i], s = tr.s;
+    ctx.fillStyle = 'rgba(0,0,0,0.14)'; ctx.beginPath(); ctx.ellipse(tr.x, tr.y, 16 * s, 6 * s, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#6b4a25'; ctx.fillRect(tr.x - 3 * s, tr.y - 22 * s, 6 * s, 22 * s);
+    ctx.fillStyle = '#3f8f45'; ctx.beginPath(); ctx.arc(tr.x, tr.y - 32 * s, 17 * s, 0, 7); ctx.fill();
+    ctx.fillStyle = '#4ea355'; ctx.beginPath(); ctx.arc(tr.x - 9 * s, tr.y - 26 * s, 11 * s, 0, 7); ctx.fill();
+    ctx.fillStyle = '#58b25c'; ctx.beginPath(); ctx.arc(tr.x + 9 * s, tr.y - 27 * s, 11 * s, 0, 7); ctx.fill();
+  }
+}
+/* ---------- 共用：有機土壤 / 木牌 / 柔光 ---------- */
+function zone(id) {
+  for (var i = 0; i < ZONES.length; i++) { if (ZONES[i].id === id) { return ZONES[i]; } }
+  return null;
+}
+function blob(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  var j = Math.min(5, w * 0.05);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.quadraticCurveTo(x + w * 0.5, y - j, x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.quadraticCurveTo(x + w + j * 0.5, y + h * 0.5, x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.quadraticCurveTo(x + w * 0.5, y + h + j, x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.quadraticCurveTo(x - j * 0.5, y + h * 0.5, x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+function tuft(x, y, s) {                 // 一叢雜草
+  ctx.strokeStyle = 'rgba(52,110,40,0.55)';
+  ctx.lineWidth = 2; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 3.5 * s, y - 7 * s); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 3.5 * s, y - 6 * s); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 0.5 * s, y - 9 * s); ctx.stroke();
+}
+function zoneGlow(z, hot) {  if (!hot) { return; }
+  var cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+  var g = ctx.createRadialGradient(cx, cy, 6, cx, cy, Math.max(z.w, z.h) * 0.62);
+  g.addColorStop(0, 'rgba(255,238,150,0.40)');
+  g.addColorStop(1, 'rgba(255,238,150,0)');
+  ctx.fillStyle = g;
+  rr(z.x - 16, z.y - 16, z.w + 32, z.h + 32, 28); ctx.fill();
+}
+function signPlank(x, y, w, text, hot) {
+  var h = 21;
+  ctx.fillStyle = 'rgba(20,30,12,0.22)'; rr(x + 2, y + 3, w, h, 5); ctx.fill();
+  ctx.fillStyle = hot ? '#ffe9a3' : '#d8a866';
+  rr(x, y, w, h, 5); ctx.fill();
+  ctx.strokeStyle = hot ? '#e0a400' : '#8a6237'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.strokeStyle = 'rgba(120,82,40,0.30)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x + 7, y + h - 4); ctx.lineTo(x + w - 7, y + h - 4); ctx.stroke();
+  txt(text, x + w / 2, y + h / 2 + 0.5, 12, '#4a3418');
+}
+function cornLeaf(x, y, dir, sc) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.quadraticCurveTo(x + dir * 15 * sc, y - 9 * sc, x + dir * 21 * sc, y + 6 * sc);
+  ctx.quadraticCurveTo(x + dir * 9 * sc, y + 2 * sc, x, y);
+  ctx.fill();
+}
+function cornIcon(x, y, sc) {           // 一根玉米（收成物／切好的原料）
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-0.25);
+  ctx.fillStyle = '#6fbf3d';
+  ctx.beginPath(); ctx.ellipse(-1.6 * sc, 2.6 * sc, 4.4 * sc, 8.6 * sc, 0.2, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f2c33d';
+  ctx.beginPath(); ctx.ellipse(0, 0, 4.6 * sc, 9 * sc, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.beginPath(); ctx.ellipse(-1.4 * sc, -2.4 * sc, 1.4 * sc, 3.8 * sc, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(190,140,40,0.35)';
+  for (var i = -1; i <= 1; i++) {
+    ctx.beginPath(); ctx.arc(1.2 * sc, i * 3.2 * sc, 0.9 * sc, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawCan(x, y, sc) {            // 一罐玉米罐頭
+  ctx.save();
+  ctx.translate(x, y);
+  var w = 9 * sc, h = 12 * sc;
+  ctx.fillStyle = '#d3dae2';
+  rr(-w / 2, -h / 2, w, h, 2.6 * sc); ctx.fill();
+  ctx.fillStyle = '#b6c0cb';
+  rr(-w / 2, -h / 2, w, h * 0.17, 2.2 * sc); ctx.fill();
+  rr(-w / 2, h / 2 - h * 0.17, w, h * 0.17, 2.2 * sc); ctx.fill();
+  ctx.fillStyle = '#f2c33d';
+  rr(-w / 2, -h * 0.28, w, h * 0.56, 1.4 * sc); ctx.fill();
+  ctx.fillStyle = '#e0a92c';
+  ctx.beginPath(); ctx.arc(0, 0, 1.7 * sc, 0, 7); ctx.fill();
+  ctx.fillStyle = '#c98f1c';
+  ctx.beginPath(); ctx.arc(0, 0, 0.8 * sc, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  rr(-w / 2 + 1.3 * sc, -h / 2 + 1.6 * sc, 1.5 * sc, h - 3.2 * sc, 0.8 * sc); ctx.fill();
+  ctx.restore();
+}
+function drawCorn(cx, by, sc, mature, grow) {
+  if (!mature) {                        // 幼苗
+    ctx.strokeStyle = '#4f8a2e'; ctx.lineWidth = 2.4;
+    ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by - 14 * grow); ctx.stroke();
+    ctx.fillStyle = '#6fc03a';
+    ctx.beginPath(); ctx.ellipse(cx - 4.5, by - 10 * grow, 5.5, 2.8, -0.55, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(cx + 4.5, by - 12 * grow, 5.5, 2.8, 0.55, 0, 7); ctx.fill();
+    return;
+  }
+  var hh = 30 * sc;
+  ctx.strokeStyle = 'rgba(0,0,0,0.16)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(cx, by + 2); ctx.lineTo(cx, by - hh + 4); ctx.stroke();
+  ctx.strokeStyle = '#3f7a24'; ctx.lineWidth = 3 * sc;
+  ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx, by - hh); ctx.stroke();
+  ctx.fillStyle = '#5fb03a';
+  cornLeaf(cx, by - hh * 0.42, -1, sc); cornLeaf(cx, by - hh * 0.66, 1, sc);
+  cornLeaf(cx, by - hh * 0.82, -1, sc * 0.8);
+  ctx.strokeStyle = '#c9a24a'; ctx.lineWidth = 1.5 * sc;
+  ctx.beginPath(); ctx.moveTo(cx, by - hh); ctx.lineTo(cx + 2 * sc, by - hh - 5 * sc); ctx.stroke();
+  cornIcon(cx + 6.5 * sc, by - hh * 0.55, sc * 1.15);
+}
+function drawField(hot) {
+  var z = zone('field'); if (!z) { return; }
+  var d = D(), mature = Math.floor(S.fieldReady);
+  zoneGlow(z, hot);
+  var sx = z.x + 6, sy = z.y + 30, sw = z.w - 12, sh = z.h - 36;
+  ctx.fillStyle = '#6b4326'; blob(sx, sy, sw, sh, 16); ctx.fill();
+  ctx.fillStyle = '#96613a'; blob(sx + 5, sy + 5, sw - 10, sh - 10, 13); ctx.fill();
+  ctx.fillStyle = '#a06a40'; blob(sx + 9, sy + 9, sw - 18, sh - 18, 11); ctx.fill();
+  // 田埂（木框）
+  ctx.strokeStyle = '#a8763f'; ctx.lineWidth = 5; blob(sx, sy, sw, sh, 16); ctx.stroke();
+  ctx.strokeStyle = 'rgba(92,58,26,0.5)'; ctx.lineWidth = 1.5; blob(sx, sy, sw, sh, 16); ctx.stroke();
+  ctx.strokeStyle = 'rgba(74,44,20,0.30)'; ctx.lineWidth = 3;
+  for (var i = 1; i <= 3; i++) {
+    var gy = sy + sh * i / 4;
+    ctx.beginPath(); ctx.moveTo(sx + 10, gy);
+    ctx.quadraticCurveTo(sx + sw / 2, gy + 5, sx + sw - 10, gy); ctx.stroke();
+  }
+  for (var k = 0; k < PLOTS.length; k++) {
+    var p = PLOTS[k], m = k < mature;
+    var sc = clamp(Math.min(p.w / 44, p.h / 40), 0.40, 1.05);
+    drawCorn(p.x + p.w / 2, p.y + p.h - 2, sc, m, m ? 1 : clamp(S.fieldReady - k, 0.18, 0.95));
+  }
+  // 田邊小木樁
+  ctx.fillStyle = '#a5764a';
+  for (var q = 0; q < 4; q++) { ctx.fillRect(sx + 4 + q * (sw - 12) / 3, sy - 7, 5, 10); }
+  signPlank(z.x + 10, z.y + 3, z.w - 20, '🌾 玉米田 ' + mature + '/' + d.fieldMax, hot);
+}
+function drawWorkbench(x, y, w, hot, working) {   // y = 桌面高度基準
+  var dh = 30;
+  ctx.fillStyle = 'rgba(0,0,0,0.16)';
+  ctx.beginPath(); ctx.ellipse(x + w / 2, y + dh + 4, w * 0.46, 6, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#8a5a2c';
+  rr(x + 7, y, 7, dh, 3); ctx.fill();
+  rr(x + w - 14, y, 7, dh, 3); ctx.fill();
+  rr(x + 10, y + dh - 9, w - 20, 5, 2); ctx.fill();          // 橫桿
+  ctx.fillStyle = '#c08b52'; rr(x, y - 20, w, 22, 6); ctx.fill();   // 桌面
+  ctx.fillStyle = '#d9a86a'; rr(x + 2, y - 18, w - 4, 7, 3); ctx.fill();
+  ctx.strokeStyle = 'rgba(120,80,40,0.35)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x + 6, y - 6); ctx.lineTo(x + w - 6, y - 6); ctx.stroke();
+  // 裝罐機（金屬機身＋漏斗＋壓頭）
+  var mw = Math.min(w - 16, 48), mx = x + w / 2 - mw / 2, my = y - 20;
+  var pr = working ? Math.abs(Math.sin(S.t * 9)) : 0;
+  ctx.fillStyle = '#6f7883';
+  ctx.beginPath();
+  ctx.moveTo(mx + 5, my - 48); ctx.lineTo(mx + mw - 5, my - 48);
+  ctx.lineTo(mx + mw - 12, my - 31); ctx.lineTo(mx + 12, my - 31);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#c2cad4';
+  ctx.beginPath();
+  ctx.moveTo(mx + 8, my - 46); ctx.lineTo(mx + mw - 8, my - 46);
+  ctx.lineTo(mx + mw - 14, my - 34); ctx.lineTo(mx + 14, my - 34);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#8e98a4'; rr(mx, my - 31, mw, 33, 5); ctx.fill();
+  ctx.fillStyle = '#aab4c0'; rr(mx + 2, my - 29, mw - 4, 9, 3); ctx.fill();
+  ctx.fillStyle = '#5b636d';
+  rr(mx + mw / 2 - 5, my - 33 + pr * 5, 10, 13, 3); ctx.fill();
+  ctx.fillStyle = working ? '#8cf0a0' : '#c9d3de';
+  ctx.beginPath(); ctx.arc(mx + mw - 9, my - 24, 2.6, 0, 7); ctx.fill();
+  ctx.fillStyle = working ? '#ffd34d' : '#e6ecf2';
+  ctx.beginPath(); ctx.arc(mx + 9, my - 24, 2.2, 0, 7); ctx.fill();
+  ctx.fillStyle = '#5b636d'; rr(mx + mw / 2 - 9, my - 3, 18, 5, 2); ctx.fill();
+}
+function drawBoard(hot) {
+  var z = zone('board'); if (!z) { return; }
+  var d = D(), n = d.boards;
+  var working = hot && S.actName === '裝罐';
+  zoneGlow(z, hot);
+  tuft(z.x + 12, z.y + z.h - 8, 1); tuft(z.x + z.w - 16, z.y + z.h - 10, 1.1);
+  tuft(z.x + z.w * 0.5 - 6, z.y + 38, 0.8);
+  var bw = Math.min((z.w - 40) / n, 104);
+  var total = n * bw + (n - 1) * 14;
+  var sx = z.x + Math.max(10, (z.w - total) / 2);
+  var topY = z.y + 74;
+  for (var i = 0; i < n; i++) {
+    var bx = sx + i * (bw + 14);
+    drawWorkbench(bx, topY, bw, hot, working);
+    // 進料：還沒裝罐的玉米排在左邊桌上
+    var show = Math.min(S.crop, 4);
+    for (var k = 0; k < show; k++) { cornIcon(bx + 13 + k * 11, topY - 9, 0.5); }
+    if (S.crop > 4 && i === 0) { txt('+' + (S.crop - 4), bx + 4, topY - 22, 11, '#ffe680'); }
+    // 出料：裝好的罐頭排在右邊桌上
+    var cn = Math.min(S.veg, 4);
+    for (var c2 = 0; c2 < cn; c2++) { drawCan(bx + bw - 13 - c2 * 11, topY - 10, 0.5); }
+  }
+  // 罐頭木箱（裝好的罐頭）
+  var bsx = z.x + z.w * 0.5 + 22, bsy = topY + 42;
+  ctx.fillStyle = 'rgba(0,0,0,0.15)'; ctx.beginPath(); ctx.ellipse(bsx, bsy + 16, 27, 5, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#c9a15c'; rr(bsx - 26, bsy - 6, 52, 22, 5); ctx.fill();
+  ctx.fillStyle = '#a9834a'; rr(bsx - 26, bsy + 2, 52, 4, 2); ctx.fill();
+  var vg = Math.min(S.veg, 8);
+  for (var v = 0; v < vg; v++) {
+    drawCan(bsx - 18 + (v % 4) * 12, bsy - 11 - Math.floor(v / 4) * 12, 0.42);
+  }
+  if (S.veg > 8) { txt('+' + (S.veg - 8), bsx + 28, bsy, 11, '#eaffb0'); }
+  signPlank(z.x + 10, z.y + 3, z.w - 20, '🥫 裝罐廠 x' + n + (S.crop > 0 ? '・玉米 ' + S.crop : ''), hot);
+}
+function drawStall(hot) {
+  var z = zone('stall'); if (!z) { return; }
+  var d = D();
+  zoneGlow(z, hot);
+  // 木地板：一片片木板（不要一整塊半透明方框，那樣看起來像格子）
+  var fpx = z.x + 10, fpw = z.w - 20, fpy = z.y + 78, fph = (z.h - 86) / 4;
+  for (var pi = 0; pi < 4; pi++) {
+    ctx.fillStyle = pi % 2 ? '#c9a15c' : '#bb9350';
+    rr(fpx, fpy + pi * fph, fpw, fph - 3, 3); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(110,74,36,0.45)'; ctx.lineWidth = 1.5;
+  rr(fpx, fpy, fpw, fph * 4 - 3, 4); ctx.stroke();
+  // 遮陽篷
+  var ay = z.y + 50, ah = Math.min(24, z.h * 0.19);
+  ctx.fillStyle = 'rgba(0,0,0,0.18)'; rr(z.x + 8, ay + ah, z.w - 16, 5, 3); ctx.fill();
+  for (var i2 = 0; i2 < 8; i2++) {
+    ctx.fillStyle = i2 % 2 === 0 ? '#e2574c' : '#f6efdf';
+    ctx.fillRect(z.x + 8 + i2 * (z.w - 16) / 8, ay, (z.w - 16) / 8 + 0.6, ah);
+    ctx.beginPath();
+    ctx.moveTo(z.x + 8 + i2 * (z.w - 16) / 8, ay + ah);
+    ctx.lineTo(z.x + 8 + (i2 + 0.5) * (z.w - 16) / 8, ay + ah + 5);
+    ctx.lineTo(z.x + 8 + (i2 + 1) * (z.w - 16) / 8, ay + ah);
+    ctx.closePath();
+    ctx.fillStyle = i2 % 2 === 0 ? '#c94a40' : '#ddd3bd'; ctx.fill();
+  }
+  ctx.fillStyle = '#a8452f'; rr(z.x + 8, ay - 4, z.w - 16, 5, 3); ctx.fill();
+  // 棚柱
+  ctx.fillStyle = '#9a6b3f';
+  ctx.fillRect(z.x + 12, ay + ah + 4, 6, z.y + z.h - (ay + ah) - 14);
+  ctx.fillRect(z.x + z.w - 18, ay + ah + 4, 6, z.y + z.h - (ay + ah) - 14);
+  // 店員
+  drawPerson(z.x + z.w * 0.24, z.y + z.h * 0.78, 11, '#e0a13c', '#e2574c', '#f0c49a', S.t * 0.5, false, 0, 0);
+  // 櫃檯
+  var cy2 = z.y + z.h * 0.66;
+  ctx.fillStyle = 'rgba(0,0,0,0.16)'; rr(z.x + 16, cy2 + 18, z.w - 32, 16, 6); ctx.fill();
+  ctx.fillStyle = '#a9743f'; rr(z.x + 16, cy2 + 10, z.w - 32, 20, 6); ctx.fill();
+  ctx.fillStyle = '#c08b52'; rr(z.x + 16, cy2 + 6, z.w - 32, 12, 5); ctx.fill();
+  ctx.fillStyle = '#d9a86a'; rr(z.x + 18, cy2 + 7, z.w - 36, 5, 3); ctx.fill();
+  // 架上庫存
+  var st = Math.min(S.stallStock, 8);
+  for (var k = 0; k < st; k++) {
+    var gx = z.x + (z.w - 32) / 2 + 18 - 4 * 22 + (k % 4) * 22 + Math.floor(k / 4) * 11;
+    var gy = cy2 + 6 - Math.floor(k / 4) * 15;
+    drawCan(gx, gy, 0.66);
+  }
+  if (S.stallStock > 8) { txt('+' + (S.stallStock - 8), z.x + z.w - 34, cy2 + 2, 12, '#eaffb0'); }
+  if (S.stallStock === 0) {
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    rr(z.x + 24, cy2 + 2, z.w - 48, 10, 5); ctx.fill();
+  }
+  signPlank(z.x + 10, z.y + 3, z.w - 20, '🏪 攤位・罐頭 $' + Math.round(d.price), hot);
+}
+function drawShopZone(hot) {
+  var z = zone('shop'); if (!z) { return; }
+  zoneGlow(z, hot);
+  var cx = z.x + z.w / 2;
+  var bw2 = z.w * 0.68, bx = cx - bw2 / 2, by = z.y + 74, bh = z.h * 0.46;
+  // 草地上的雜草叢（取消一整塊底板，不然看起來像格子）
+  tuft(z.x + 14, z.y + z.h - 9, 1); tuft(z.x + z.w - 18, z.y + z.h - 11, 1.15);
+  tuft(z.x + 11, z.y + 40, 0.9); tuft(z.x + z.w - 13, z.y + 48, 0.95);
+  // 屋身
+  ctx.fillStyle = 'rgba(0,0,0,0.16)'; rr(bx + 4, by + 6, bw2, bh, 6); ctx.fill();
+  ctx.fillStyle = '#f2e0bb'; rr(bx, by, bw2, bh, 6); ctx.fill();
+  ctx.strokeStyle = '#c2a479'; ctx.lineWidth = 2; ctx.stroke();
+  // 屋頂
+  ctx.fillStyle = '#c0653f';
+  ctx.beginPath();
+  ctx.moveTo(bx - 11, by + 2); ctx.lineTo(cx, by - 38); ctx.lineTo(bx + bw2 + 11, by + 2);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#a04d2c';
+  ctx.beginPath();
+  ctx.moveTo(bx - 11, by + 2); ctx.lineTo(bx + bw2 + 11, by + 2);
+  ctx.lineTo(bx + bw2 + 11, by + 9); ctx.lineTo(bx - 11, by + 9);
+  ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = 1.5;
+  for (var i = 1; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(bx - 6 + (bw2 + 12) * i / 4, by + 1);
+    ctx.lineTo(cx + (bx - 6 + (bw2 + 12) * i / 4 - cx) * 0.44, by - 22);
+    ctx.stroke();
+  }
+  // 門
+  ctx.fillStyle = '#8d5a34'; rr(cx - 15, by + bh - 42, 30, 42, 5); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.18)'; rr(cx - 15, by + bh - 42, 30, 8, 5); ctx.fill();
+  ctx.fillStyle = '#f5d98a'; ctx.beginPath(); ctx.arc(cx + 9, by + bh - 20, 2.6, 0, 7); ctx.fill();
+  // 窗
+  ctx.fillStyle = '#a8dbe8'; rr(bx + 10, by + 14, bw2 * 0.26, 20, 4); ctx.fill();
+  rr(bx + bw2 - 10 - bw2 * 0.26, by + 14, bw2 * 0.26, 20, 4); ctx.fill();
+  ctx.strokeStyle = 'rgba(120,90,50,0.5)'; ctx.lineWidth = 1.5;
+  rr(bx + 10, by + 14, bw2 * 0.26, 20, 4); ctx.stroke();
+  rr(bx + bw2 - 10 - bw2 * 0.26, by + 14, bw2 * 0.26, 20, 4); ctx.stroke();
+  // 屋簷小燈
+  ctx.fillStyle = hot ? '#ffe680' : '#ffd34d';
+  ctx.beginPath(); ctx.arc(cx, by + 6, 4.5, 0, 7); ctx.fill();
+  // 門口促銷牌
+  ctx.fillStyle = '#fff5db'; rr(cx + 22, by + bh - 22, 20, 22, 3); ctx.fill();
+  ctx.strokeStyle = '#b99a6a'; ctx.lineWidth = 1.5; ctx.stroke();
+  txt('$', cx + 32, by + bh - 11, 12, '#c0392b');
+  signPlank(z.x + 10, z.y + 3, z.w - 20, '🛒 雜貨店（走進來升級）', hot);
+}
+
+/* ---------------- 繪圖：角色 ---------------- */
+function drawPerson(x, y, s, shirt, hat, face, walkT, moving, cropN, vegN) {
+  var bob = moving ? Math.sin(walkT * 11) * s * 0.07 : Math.sin(walkT * 2) * s * 0.02;
+  ctx.fillStyle = 'rgba(0,0,0,0.20)';
+  ctx.beginPath(); ctx.ellipse(x, y + 2, s * 0.85, s * 0.32, 0, 0, 7); ctx.fill();
+  // 腿
+  ctx.fillStyle = '#3d5a80';
+  var lg = moving ? Math.sin(walkT * 11) * s * 0.3 : 0;
+  rr(x - s * 0.42, y - s * 0.72 + lg, s * 0.3, s * 0.7, s * 0.12); ctx.fill();
+  rr(x + s * 0.12, y - s * 0.72 - lg, s * 0.3, s * 0.7, s * 0.12); ctx.fill();
+  // 身體
+  ctx.fillStyle = shirt;
+  rr(x - s * 0.62, y - s * 2.0 + bob, s * 1.24, s * 1.42, s * 0.32); ctx.fill();
+  // 手
+  ctx.fillStyle = face;
+  ctx.beginPath(); ctx.arc(x - s * 0.70, y - s * 1.42 + bob, s * 0.20, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + s * 0.70, y - s * 1.42 + bob, s * 0.20, 0, 7); ctx.fill();
+  // 頭
+  var hy = y - s * 2.42 + bob, hr = s * 0.62;
+  ctx.fillStyle = face;
+  ctx.beginPath(); ctx.arc(x, hy, hr, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x - s * 0.60, hy + s * 0.06, s * 0.13, 0, 7); ctx.fill();   // 耳
+  ctx.beginPath(); ctx.arc(x + s * 0.60, hy + s * 0.06, s * 0.13, 0, 7); ctx.fill();
+  // 頭髮（沒戴帽的人）
+  if (!hat) {
+    ctx.fillStyle = '#3b2a1e';
+    ctx.beginPath(); ctx.arc(x, hy - s * 0.06, hr, Math.PI * 1.02, Math.PI * 1.98); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, hy + s * 0.02, hr * 0.94, hr * 0.62, 0, Math.PI * 1.12, Math.PI * 1.88); ctx.fill();
+  }
+  // 眼白 + 瞳孔
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.ellipse(x - s * 0.23, hy + s * 0.02, s * 0.135, s * 0.16, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + s * 0.23, hy + s * 0.02, s * 0.135, s * 0.16, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#2b2118';
+  ctx.beginPath(); ctx.arc(x - s * 0.20, hy + s * 0.04, s * 0.075, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + s * 0.26, hy + s * 0.04, s * 0.075, 0, 7); ctx.fill();
+  // 眉毛
+  ctx.strokeStyle = '#4a3524'; ctx.lineWidth = Math.max(1, s * 0.08); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x - s * 0.36, hy - s * 0.18); ctx.lineTo(x - s * 0.10, hy - s * 0.13); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + s * 0.10, hy - s * 0.13); ctx.lineTo(x + s * 0.36, hy - s * 0.18); ctx.stroke();
+  // 微笑
+  ctx.strokeStyle = '#a8543f'; ctx.lineWidth = Math.max(1, s * 0.07);
+  ctx.beginPath(); ctx.arc(x, hy + s * 0.10, s * 0.19, Math.PI * 0.22, Math.PI * 0.78); ctx.stroke();
+  // 腮紅
+  ctx.fillStyle = 'rgba(238,130,110,0.32)';
+  ctx.beginPath(); ctx.arc(x - s * 0.40, hy + s * 0.14, s * 0.12, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + s * 0.40, hy + s * 0.14, s * 0.12, 0, 7); ctx.fill();
+  // 帽子（草帽：帽頂 + 帽簷 + 帽帶）
+  if (hat) {
+    ctx.fillStyle = hat;
+    ctx.beginPath(); ctx.arc(x, hy - s * 0.16, hr * 1.02, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, hy - s * 0.14, hr * 1.58, hr * 0.42, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = 'rgba(150,100,45,0.55)';
+    ctx.beginPath(); ctx.ellipse(x, hy - s * 0.14, hr * 1.58, hr * 0.42, 0, Math.PI * 0.06, Math.PI * 0.94); ctx.fill();
+    ctx.fillStyle = '#8a5a2c';
+    ctx.beginPath(); ctx.arc(x, hy - s * 0.18, hr * 1.0, Math.PI * 1.18, Math.PI * 1.82); ctx.fill();
+  }
+  // 手上拿的東西
+  if (vegN) {
+    drawCan(x + s * 0.82, y - s * 1.78 + bob, s * 0.075);
+  } else if (cropN) {
+    cornIcon(x + s * 0.86, y - s * 1.72 + bob, s * 0.085);
+  }
+}
+function drawPlayer() {
+  var hot = !!zoneAt(P.x, P.y);
+  var d = D();
+  if (hot) {
+    ctx.strokeStyle = 'rgba(255,226,110,0.9)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.ellipse(P.x, P.y + 3, 24, 9, 0, 0, 7); ctx.stroke();
+  }
+  drawPerson(P.x, P.y, 16, '#4f7fd4', '#f0d27a', '#f7d3ac', P.act, P.walk, S.crop, S.veg);
+  // 動作提示：名稱 + 還剩多少 + 進度條（比原本的圈圈清楚）
+  if (S.actName) {
+    var label = S.actName + (S.actSub ? '・' + S.actSub : '');
+    ctx.font = '800 13px system-ui,"Noto Sans TC",sans-serif';
+    var lw = ctx.measureText(label).width;
+    var bw2 = Math.max(112, lw + 26), bh2 = 30;
+    var bx2 = clamp(P.x - bw2 / 2, 6, Math.max(6, W - bw2 - 6));
+    var by2 = P.y - 104;
+    ctx.fillStyle = 'rgba(18,34,14,0.74)';
+    rr(bx2, by2, bw2, bh2, 13); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,235,150,0.45)'; ctx.lineWidth = 1.5; ctx.stroke();
+    txt(label, bx2 + bw2 / 2, by2 + 11, 13, '#fff9d6');
+    var pr = clamp(S.actT / Math.max(0.01, S.actNeed), 0, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    rr(bx2 + 9, by2 + bh2 - 10, bw2 - 18, 6, 3); ctx.fill();
+    ctx.fillStyle = pr >= 1 ? '#8ce46a' : '#ffd34d';
+    rr(bx2 + 9, by2 + bh2 - 10, Math.max(0, (bw2 - 18) * pr), 6, 3); ctx.fill();
+    // 小指針
+    ctx.fillStyle = 'rgba(18,34,14,0.6)';
+    ctx.beginPath();
+    ctx.moveTo(bx2 + bw2 / 2 - 6, by2 + bh2); ctx.lineTo(bx2 + bw2 / 2 + 6, by2 + bh2);
+    ctx.lineTo(bx2 + bw2 / 2, by2 + bh2 + 7); ctx.closePath(); ctx.fill();
+  }
+  // 背包顯示
+  var cap = d.bag, tot = S.crop + S.veg;
+  var bw = 76, bh = 8, by = P.y + 12;
+  ctx.fillStyle = 'rgba(24,38,18,0.55)'; rr(P.x - bw / 2, by, bw, bh, 4); ctx.fill();
+  ctx.fillStyle = tot >= cap ? '#ff8a7a' : '#8ce46a';
+  rr(P.x - bw / 2 + 1, by + 1, (bw - 2) * clamp(tot / cap, 0, 1), bh - 2, 3); ctx.fill();
+}
+function drawWorkers() {
+  for (var i = 0; i < S.workers.length; i++) {
+    var w = S.workers[i];
+    drawBot(w.x, w.y, 13, w.col, w.type, w.load);
+  }
+}
+function drawBot(x, y, s, col, kind, load) {
+  var bob = Math.sin(S.t * 6 + x * 0.1) * s * 0.05;
+  ctx.fillStyle = 'rgba(0,0,0,0.22)';
+  ctx.beginPath(); ctx.ellipse(x, y + 2, s * 0.95, s * 0.32, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#2f333a';
+  rr(x - s * 0.9, y - s * 0.55, s * 1.8, s * 0.5, s * 0.2); ctx.fill();
+  ctx.fillStyle = '#59616b';
+  for (var i = 0; i < 4; i++) { ctx.beginPath(); ctx.arc(x - s * 0.6 + i * s * 0.4, y - s * 0.3, s * 0.13, 0, 7); ctx.fill(); }
+  ctx.fillStyle = col;
+  rr(x - s * 0.62, y - s * 1.5 + bob, s * 1.24, s * 1.05, s * 0.24); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.25)';
+  rr(x - s * 0.5, y - s * 1.42 + bob, s * 1.0, s * 0.28, s * 0.12); ctx.fill();
+  ctx.fillStyle = '#12241a';
+  rr(x - s * 0.44, y - s * 1.32 + bob, s * 0.88, s * 0.38, s * 0.1); ctx.fill();
+  ctx.fillStyle = '#8cf0b0';
+  ctx.beginPath(); ctx.arc(x - s * 0.18, y - s * 1.13 + bob, s * 0.085, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + s * 0.18, y - s * 1.13 + bob, s * 0.085, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#8a939e'; ctx.lineWidth = Math.max(1, s * 0.07);
+  ctx.beginPath(); ctx.moveTo(x, y - s * 1.5 + bob); ctx.lineTo(x, y - s * 1.85 + bob); ctx.stroke();
+  ctx.fillStyle = kind === 'harvest' ? '#ffd34d' : (kind === 'can' ? '#7ee0ff' : '#ff9a6a');
+  ctx.beginPath(); ctx.arc(x, y - s * 1.92 + bob, s * 0.13, 0, 7); ctx.fill();
+  if (load) {
+    if (kind === 'harvest') { cornIcon(x, y - s * 1.78 + bob, 0.6); }
+    else { drawCan(x, y - s * 1.76 + bob, 0.48); }
+  }
+}
+function drawCustomers() {
+  for (var i = 0; i < S.customers.length; i++) {
+    var c = S.customers[i];
+    if (c.st === 'leave') { ctx.globalAlpha = 0.6; }
+    drawPerson(c.x, c.y, 11, c.col, null, c.skin, S.t + c.bob, true, 0, 0);
+    if (c.st === 'queue') {
+      ctx.save();
+      ctx.globalAlpha = 1;
+      txt(S.stallStock >= 1 ? '💭' : '⏳', c.x, c.y - 40, 12, '#fff');
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ---------------- HUD ---------------- */
+var hudCache = null;
+function iconBtn(b, label, on) {
+  ctx.fillStyle = on ? 'rgba(255,255,255,0.95)' : 'rgba(60,60,60,0.55)';
+  rr(b.x, b.y, b.w, b.h, 12); ctx.fill();
+  ctx.strokeStyle = 'rgba(40,60,28,0.5)'; ctx.lineWidth = 2; ctx.stroke();
+  txt(label, b.x + b.w / 2, b.y + b.h / 2, 20, on ? '#3f6026' : '#cfcfcf');
+}
+function drawHUD() {
+  var d = D();
+  // 金幣
+  // 金幣（框寬隨數字自動伸縮，避免大數字和小字重疊）
+  var cs = fmt(S.coins);
+  if (hudCache === null) {
+    var inc = 0;
+    for (var i = 0; i < S.earn.length; i++) { inc += S.earn[i][1]; }
+    hudCache = Math.round(inc);
+  }
+  var incS = '$' + fmt(hudCache) + '/分';
+  var cfs = cs.length > 8 ? 17 : 21;
+  ctx.font = '800 ' + cfs + 'px system-ui,"Noto Sans TC",sans-serif';
+  var cw = ctx.measureText(cs).width;
+  ctx.font = '700 11px system-ui,"Noto Sans TC",sans-serif';
+  var iw = ctx.measureText(incS).width;
+  var pad2 = Math.max(10, W * 0.035);
+  var availW = W - 2 * pad2 - 138;
+  var boxW = Math.min(availW, Math.max(150, cw + iw + 64));
+  var bx0 = (W + 50) / 2 - boxW / 2;
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  rr(bx0, 12, boxW, 40, 14); ctx.fill();
+  ctx.strokeStyle = 'rgba(74,104,50,0.55)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#f5c033'; ctx.beginPath(); ctx.arc(bx0 + 22, 32, 11, 0, 7); ctx.fill();
+  txt('$', bx0 + 22, 33, 13, '#8a5a12');
+  txt(cs, bx0 + 40, 32, cfs, '#4a3308', 'left');
+  txt(incS, bx0 + boxW - 10, 32, 11, '#7a6647', 'right');
+  // 按鈕
+  for (var b = 0; b < BTN.length; b++) {
+    var bt = BTN[b];
+    if (bt.id === 'pause') {
+      iconBtn(bt, '', true);
+      // 圖示自己畫，避免手機字型沒有的符號變空白
+      var px = bt.x + bt.w / 2, py = bt.y + bt.h / 2;
+      ctx.fillStyle = '#3f6026';
+      if (S.paused) {
+        ctx.beginPath(); ctx.moveTo(px - 6, py - 9); ctx.lineTo(px + 10, py); ctx.lineTo(px - 6, py + 9); ctx.closePath(); ctx.fill();
+      } else {
+        rr(px - 9, py - 8, 7, 16, 2); ctx.fill();
+        rr(px + 2, py - 8, 7, 16, 2); ctx.fill();
+      }
+    }
+    if (bt.id === 'sfx') { iconBtn(bt, AUD.on ? '🔊' : '🔇', AUD.on); }
+    if (bt.id === 'bgm') { iconBtn(bt, '🎵', AUD.musOn); }
+  }
+  // 底部資訊
+  var barH = 42, iy = H - barH - 6;
+  ctx.fillStyle = 'rgba(255,255,255,0.88)';
+  rr(W * 0.04, iy, W * 0.92, barH, 12); ctx.fill();
+  var totB = S.crop + S.veg;
+  txt('🌽 玉米 ' + Math.floor(S.crop) + '　🥫 罐頭 ' + Math.floor(S.veg) + '　背包 ' + totB + '/' + d.bag, W / 2, iy + 14, 12, '#3f5c28');
+  txt('🏪 庫存 ' + S.stallStock + '　👥 客人 ' + S.customers.length + '/' + d.qmax + '　🚜 自動 ' + lv('autoFarm') + '・⚙️' + lv('autoCan') + '・🚚' + lv('autoSell'), W / 2, iy + 29, 12, '#5b7a3a');
+  // 提示
+  if (S.crop + S.veg === 0 && S.stallStock === 0 && S.totalEarned === 0 && S.started) {
+    txt('走到 🌽玉米田 收成 → 🥫裝罐廠 裝罐 → 🏪攤位 上架 → 客人自己來買', W / 2, H * 0.72, 13, '#ffffff');
+  }
+}
+
+/* ---------------- 覆蓋層 ---------------- */
+function drawTitle() {
+  ctx.fillStyle = 'rgba(24,46,20,0.88)'; ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  txt('🌽 玉米罐頭大亨 🥫', W / 2, H * 0.26, Math.min(40, W * 0.10), '#ffe680');
+  txt('收成玉米 → 裝成罐頭 → 上架 → 客人上門買', W / 2, H * 0.34, Math.min(16, W * 0.042), '#e8ffd0');
+  var boxY = H * 0.42, boxH = H * 0.28;
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  rr(W * 0.10, boxY, W * 0.80, boxH, 16); ctx.fill();
+  var rows = ['👆 拖曳畫面 = 走動（也可以點地上直接走過去）', '🌽 站在玉米田 = 收成玉米', '🥫 站上裝罐廠 = 把玉米裝成罐頭', '🏪 站在攤位 = 把罐頭上架（客人自己來買）', '🛒 走進雜貨店 = 買升級（自動化・裝罐機・客人）'];
+  for (var i = 0; i < rows.length; i++) {
+    txt(rows[i], W / 2, boxY + 30 + i * (boxH - 60) / 4.2, Math.min(14, W * 0.037), '#dff0c8');
+  }
+  ctx.fillStyle = S.coins > 0 || S.totalEarned > 0 ? '#ffb347' : '#8ce46a';
+  rr(W / 2 - 108, H * 0.75, 216, 58, 29); ctx.fill();
+  txt(S.totalEarned > 0 ? '繼續遊戲' : '開始遊戲', W / 2, H * 0.75 + 30, 24, '#23401a');
+  txt('（有存檔會自動接續）', W / 2, H * 0.85, 12, '#a8c890');
+  ctx.restore();
+}
+function drawPause() {
+  ctx.fillStyle = 'rgba(16,28,12,0.78)'; ctx.fillRect(0, 0, W, H);
+  txt('⏸ 暫停', W / 2, H * 0.40, 34, '#ffe680');
+  ctx.fillStyle = '#8ce46a';
+  rr(W / 2 - 100, H * 0.50, 200, 54, 27); ctx.fill();
+  txt('繼續遊戲', W / 2, H * 0.50 + 28, 22, '#23401a');
+  ctx.fillStyle = 'rgba(255,255,255,0.18)';
+  rr(W / 2 - 100, H * 0.59, 200, 46, 23); ctx.fill();
+  txt('🛒 雜貨店（升級）', W / 2, H * 0.59 + 24, 16, '#e6f6d6');
+}
+
+/* ---------------- 輸入 ---------------- */
+function inRect(x, y, r) { return x > r.x && x < r.x + r.w && y > r.y && y < r.y + r.h; }
+function localXY(e) {
+  var r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+function down(x, y, id) {
+  if (!S.started) {
+    if (y > H * 0.70 && y < H * 0.86) { startGame(); }
+    return;
+  }
+  if (S.shopOpen) {
+    if (inRect(x, y, PANEL.closeBtn)) { closeShop(); sCust(); return; }
+    // ✕ 加大感應範圍
+    var clbig = { x: PANEL.close.x - 12, y: PANEL.close.y - 12, w: PANEL.close.w + 24, h: PANEL.close.h + 24 };
+    if (inRect(x, y, clbig)) { closeShop(); sCust(); return; }
+    // 點面板外面任何地方也能關（最後保險，避免卡在店裡）
+    if (x < PANEL.x || x > PANEL.x + PANEL.w || y < PANEL.y || y > PANEL.y + PANEL.h) { closeShop(); sCust(); return; }
+    if (inRect(x, y, PANEL.resetBtn)) {
+      if (S.resetArm) { resetAll(); }
+      else { S.resetArm = 1; popText(W / 2, PANEL.resetBtn.y - 14, '再按一次確認', '#c0392b', 18); }
+      return;
+    }
+    for (var i = 0; i < PANEL.rows.length; i++) {
+      if (inRect(x, y, PANEL.rows[i])) { buyU(UPGS[PANEL.rows[i].i]); return; }
+    }
+    return;
+  }
+  if (S.paused) {
+    if (y > H * 0.48 && y < H * 0.58) { S.paused = false; return; }
+    if (y > H * 0.58 && y < H * 0.66) { S.paused = false; openShop(); return; }
+    return;
+  }
+  for (var b = 0; b < BTN.length; b++) {
+    var bt = BTN[b];
+    if (!inRect(x, y, bt)) { continue; }
+    if (bt.id === 'pause') { S.paused = true; save(); return; }
+    if (bt.id === 'sfx') { AUD.on = !AUD.on; if (AUD.on) { sCust(); } save(); return; }
+    if (bt.id === 'bgm') { AUD.musOn = !AUD.musOn; MUS.next = 0; save(); sCust(); return; }
+  }
+  if (joy.on) { return; }
+  joy.on = true; joy.id = (id === undefined ? 'm' : id); joy.ox = x; joy.oy = y; joy.x = x; joy.y = y;
+  joy.sx = x; joy.sy = y; joy.st = performance.now(); joy.moved = false;
+}
+function moveT(x, y) {
+  if (!S.started || S.shopOpen || S.paused) { return; }
+  if (!joy.on) { return; }
+  joy.x = x; joy.y = y;
+  var dx = x - joy.ox, dy = y - joy.oy;
+  if (Math.sqrt(dx * dx + dy * dy) > 14) { joy.moved = true; }
+  if (Math.sqrt(dx * dx + dy * dy) > 70) {           // 拖太遠 → 拖把跟著走
+    var m = Math.sqrt(dx * dx + dy * dy);
+    joy.ox = x - dx / m * 70; joy.oy = y - dy / m * 70;
+  }
+}
+function up(x, y) {
+  if (!joy.on) { return; }
+  var dt = performance.now() - joy.st;
+  joy.on = false; joy.id = null; joy.moved = false;
+  if (!S.started) { return; }
+  if (S.shopOpen || S.paused) { return; }
+  if (!joy.moved && dt < 420) {                       // 點擊 → 走過去
+    var hit = false;
+    for (var b = 0; b < BTN.length; b++) { if (inRect(x, y, BTN[b])) { hit = true; } }
+    if (!hit) { P.tx = { x: x, y: y }; ring(x, y, 'rgba(255,255,255,0.7)'); }
+  }
+}
+function pickT(ts) {
+  for (var i = 0; i < ts.length; i++) { if (ts[i].identifier === joy.id) { return ts[i]; } }
+  return null;
+}
+cv.addEventListener('touchstart', function (e) {
+  e.preventDefault();
+  if (joy.on) { return; }
+  var t = e.changedTouches[0];
+  var p = localXY(t);
+  down(p.x, p.y, t.identifier);
+}, { passive: false });
+cv.addEventListener('touchmove', function (e) {
+  e.preventDefault();
+  var t = pickT(e.changedTouches);
+  if (!t) { return; }
+  var p = localXY(t);
+  moveT(p.x, p.y);
+}, { passive: false });
+cv.addEventListener('touchend', function (e) {
+  e.preventDefault();
+  var t = pickT(e.changedTouches);
+  if (!t) { return; }
+  var p = localXY(t);
+  up(p.x, p.y);
+}, { passive: false });
+cv.addEventListener('touchcancel', function () { joy.on = false; }, { passive: false });
+cv.addEventListener('mousedown', function (e) { var p = localXY(e); down(p.x, p.y, 'm'); });
+cv.addEventListener('mousemove', function (e) { if (joy.id !== 'm') { return; } var p = localXY(e); moveT(p.x, p.y); });
+window.addEventListener('mouseup', function (e) { if (joy.id !== 'm') { return; } var p = localXY(e); up(p.x, p.y); });
+cv.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+cv.addEventListener('dblclick', function (e) { e.preventDefault(); });
+document.addEventListener('gesturestart', function (e) { e.preventDefault(); });
+
+function startGame() {
+  S.started = true;
+  AC();
+  sUp();
+  popText(W / 2, H * 0.5, '開始！', '#ffe680', 28);
+}
+document.addEventListener('visibilitychange', function () {
+  if (document.hidden) { S.paused = true; save(); }
+});
+
+/* ---------------- 主迴圈 ---------------- */
+var last = 0;
+function frame(ts) {
+  requestAnimationFrame(frame);
+  if (!last) { last = ts; }
+  var dt = (ts - last) / 1000; last = ts;
+  if (dt > 0.12) { dt = 0.12; }
+  if (dt < 0) { dt = 0; }
+  if (S.started && !S.paused && !S.shopOpen) { update(dt); }
+  else { S.t += dt * 0.25; updateFX(dt); }
+
+  drawGround();
+  for (var i = 0; i < ZONES.length; i++) {
+    var z = ZONES[i], hot = !!zoneAt(P.x, P.y) && zoneAt(P.x, P.y).id === z.id;
+    if (z.id === 'field') { drawField(hot); }
+    else if (z.id === 'board') { drawBoard(hot); }
+    else if (z.id === 'stall') { drawStall(hot); }
+    else { drawShopZone(hot); }
+  }
+  drawBelts();
+  drawCustomers();
+  drawWorkers();
+  drawPlayer();
+  drawFX();
+  drawHUD();
+  if (!S.started) { drawTitle(); }
+  else if (S.shopOpen) { drawPanel(); }     // 面板優先畫：狀態和輸入判斷順序要一致
+  else if (S.paused) { drawPause(); }
+}
+(function boot() {
+  resize();
+  load();
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function () { setTimeout(resize, 200); });
+  setInterval(save, 5000);
+  window.addEventListener('pagehide', save);
+  requestAnimationFrame(frame);
+})();
+window.addEventListener('resize', function () { buildPlots(D().fieldMax); });
+
+/* ---------------- 測試掛勾 ---------------- */
+window.__farm = {
+  S: S, P: P, D: D, UPGS: UPGS, lv: lv, cost: cost, joy: joy,
+  buyU: buyU, openShop: openShop, closeShop: closeShop, startGame: startGame,
+  PANEL: PANEL, down: down, zoneAt: zoneAt,
+  spawnCustomer: spawnCustomer, makeWorker: makeWorker, resetAll: resetAll,
+  zones: function () { return ZONES; }, spots: zoneSpot, save: save, load: load,
+  step: function (sec) {
+    var n = Math.max(1, Math.round(sec / (1 / 60)));
+    for (var i = 0; i < n; i++) { update(1 / 60); }
+    return { coins: Math.floor(S.coins), crop: S.crop, veg: S.veg, stock: S.stallStock, fr: Math.round(S.fieldReady * 10) / 10, cust: S.customers.length, wk: S.workers.length };
+  },
+  put: function (zone) { var s = zoneSpot(zone); P.x = s.x; P.y = s.y; P.tx = null; return [Math.round(P.x), Math.round(P.y)]; },
+  say: function () { return S.actName; }
+};
+</script>
+</body>
+</html>
