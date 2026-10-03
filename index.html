@@ -151,8 +151,8 @@ var UPGS = [
     val: function (l) { return (6 + 2 * l) + ' 格'; } },
   { id: 'field', ic: '🌱', n: '肥沃土壤', d: '玉米長更快、田 +1 格', base: 40, mul: 1.60, max: 12,
     val: function (l) { return (6 + l) + ' 格'; } },
-  { id: 'knife', ic: '🥫', n: '增設裝罐機', d: '裝罐更快、裝罐機 +1（最多 4 台）', base: 45, mul: 1.60, max: 4,
-    val: function (l) { return Math.min(4, 1 + l) + ' 台'; } },
+  { id: 'knife', ic: '🥫', n: '增設裝罐機', d: '裝罐更快、裝罐機 +1', base: 45, mul: 1.60, max: 6,
+    val: function (l) { return '×' + (1 + 0.35 * l).toFixed(1) + '・' + Math.min(6, 1 + l) + '台'; } },
   { id: 'price', ic: '🗣️', n: '好口條', d: '罐頭價 +8%', base: 50, mul: 1.65, max: 14,
     val: function (l) { return '×' + (Math.pow(1.08, l)).toFixed(2); } },
   { id: 'sign', ic: '📣', n: '招牌', d: '客人上限 +1、來客更快更多', base: 80, mul: 1.70, max: 10,
@@ -195,7 +195,8 @@ function D() {                              // 由等級推導出的數值
   f.harvestTime = 0.55;
   f.chopTime = 0.70 / Math.pow(1.15, lv('knife'));
   f.shelfTime = 0.22;
-  f.boards = Math.min(4, 1 + lv('knife'));
+  f.boards = Math.min(6, 1 + lv('knife'));
+  f.canMul = 1 + 0.35 * lv('knife');       // 裝罐機台數＝產能倍率（買了真的變快）
   f.price = 6 * Math.pow(1.08, lv('price')) * Math.pow(1.03, lv('sign'));
   f.qmax = 2 + lv('sign');
   f.custGap = Math.max(1.0, 3.5 / (1 + 0.30 * lv('sign')));
@@ -374,7 +375,7 @@ function doZone(dt, d) {
   }
   if (z.id === 'board') {
     if (S.crop < 1) { S.actName = '先去田裡收成'; S.actT = Math.max(0, S.actT - dt * 2); return; }
-    S.actName = '裝罐'; S.actNeed = d.chopTime; S.actT += dt;
+    S.actName = '裝罐'; S.actNeed = d.chopTime / d.canMul; S.actT += dt;
     S.actSub = '玉米 ' + S.crop + ' 根';
     if (S.actT >= S.actNeed) {
       S.actT = 0;
@@ -518,7 +519,7 @@ function updateAuto(dt, d) {
   // 自動裝罐：輸送帶把玉米送進裝罐機 → 罐頭
   var ac = lv('autoCan');
   if (ac > 0 && S.crop >= 1) {
-    S.autoC += dt * ac * (0.50 + 0.12 * lv('carry'));
+    S.autoC += dt * ac * (0.50 + 0.12 * lv('carry')) * d.canMul;
     while (S.autoC >= 1 && S.crop >= 1) { S.autoC -= 1; S.crop -= 1; S.veg += 1; }
   }
   // 自動運去賣：搬運車把罐頭送上攤位
@@ -969,8 +970,12 @@ function drawField(hot) {
   for (var q = 0; q < 4; q++) { ctx.fillRect(sx + 4 + q * (sw - 12) / 3, sy - 7, 5, 10); }
   signPlank(z.x + 10, z.y + 3, z.w - 20, '🌾 玉米田 ' + mature + '/' + d.fieldMax, hot);
 }
-function drawWorkbench(x, y, w, hot, working) {   // y = 桌面高度基準
+function drawWorkbench(x, y, w, hot, working, k) {   // y = 桌面高度基準；k = 整座等比縮放（兩排時用）
+  k = k === undefined ? 1 : k;
   var dh = 30;
+  ctx.save();
+  var gx = x + w / 2, gy = y + dh;                   // 以桌腳著地點為縮放基準
+  ctx.translate(gx, gy); ctx.scale(k, k); ctx.translate(-gx, -gy);
   ctx.fillStyle = 'rgba(0,0,0,0.16)';
   ctx.beginPath(); ctx.ellipse(x + w / 2, y + dh + 4, w * 0.46, 6, 0, 0, 7); ctx.fill();
   ctx.fillStyle = '#8a5a2c';
@@ -1006,7 +1011,8 @@ function drawWorkbench(x, y, w, hot, working) {   // y = 桌面高度基準
   ctx.fillStyle = working ? '#ffd34d' : '#e6ecf2';
   ctx.beginPath(); ctx.arc(mx + 9, my - 24, 2.2, 0, 7); ctx.fill();
   ctx.fillStyle = '#5b636d'; rr(mx + mw / 2 - 9, my - 3, 18, 5, 2); ctx.fill();
-  ctx.restore();
+  ctx.restore();          // 機器縮放
+  ctx.restore();          // 整座工作台縮放
 }
 function drawBoard(hot) {
   var z = zone('board'); if (!z) { return; }
@@ -1015,33 +1021,44 @@ function drawBoard(hot) {
   zoneGlow(z, hot);
   tuft(z.x + 12, z.y + z.h - 8, 1); tuft(z.x + z.w - 16, z.y + z.h - 10, 1.1);
   tuft(z.x + z.w * 0.5 - 6, z.y + 38, 0.8);
-  var gapx = n > 2 ? 10 : 14;                       // 機器多時把間距縮小，才不會擠出格子外
-  var bw = Math.min((z.w - 20 - (n - 1) * gapx) / n, 104);
-  var total = n * bw + (n - 1) * gapx;
+  // 只有「格子夠高」才排兩排（手機直向）；不夠高就維持一排，免得壓到下面攤位的招牌
+  var avail = z.h - 30;
+  var rows = (n > 4 && (avail - 16) / 196 >= 0.55) ? 2 : 1;
+  var perRow = Math.ceil(n / rows);
+  var k = rows === 1 ? 1 : Math.min(1, (avail - 16) / 196);   // 兩排時整座工作台等比縮小
+  var gapx = rows === 1 ? (n > 2 ? 10 : 14) : 10;   // 機器多時把間距縮小，才不會擠出格子外
+  var bw = Math.min((z.w - 20 - (perRow - 1) * gapx) / perRow, 104);
+  var total = perRow * bw + (perRow - 1) * gapx;
   var sx = z.x + Math.max(10, (z.w - total) / 2);
-  var topY = z.y + 74;
+  var topY = rows === 1 ? z.y + 74 : z.y + 28 + 68 * k;
+  var step = 98 * k + 9;                            // 下一排的基準線
   for (var i = 0; i < n; i++) {
-    var bx = sx + i * (bw + gapx);
-    drawWorkbench(bx, topY, bw, hot, working);
+    var rw = Math.floor(i / perRow), ci = i % perRow;
+    var yb = topY + rw * step;
+    var bx = sx + ci * (bw + gapx);
+    var bwS = bw * k, ty = yb + 30 - 30 * k;        // 縮小後桌面的實際寬度／高度
+    drawWorkbench(bx, yb, bw, hot, working, k);
     // 進料：還沒裝罐的玉米排在左邊桌上
-    var fit = Math.max(1, Math.floor((bw - 14) / 10));   // 桌子變窄時少放幾根，免得超出桌緣
+    var fit = Math.max(1, Math.floor((bwS - 14) / 10));   // 桌子變窄時少放幾根，免得超出桌緣
     var show = Math.min(S.crop, fit);
-    for (var k = 0; k < show; k++) { cornIcon(bx + 9 + k * 10, topY - 9, 0.46); }
-    if (S.crop > fit && i === 0) { txt('+' + (S.crop - fit), bx + bw / 2, topY - 26, 11, '#ffe680'); }
+    for (var q = 0; q < show; q++) { cornIcon(bx + 9 + q * 10, ty - 9 * k, 0.46); }
+    if (S.crop > fit && i === 0) { txt('+' + (S.crop - fit), bx + bwS / 2, ty - 24 * k, 11, '#ffe680'); }
     // 出料：裝好的罐頭排在右邊桌上
     var cn = Math.min(S.veg, fit);
-    for (var c2 = 0; c2 < cn; c2++) { drawCan(bx + bw - 9 - c2 * 10, topY - 10, 0.46); }
+    for (var c2 = 0; c2 < cn; c2++) { drawCan(bx + bwS - 9 - c2 * 10, ty - 10 * k, 0.44); }
   }
-  // 罐頭木箱（裝好的罐頭）
-  var bsx = z.x + z.w * 0.5 + 22, bsy = topY + 42;
-  ctx.fillStyle = 'rgba(0,0,0,0.15)'; ctx.beginPath(); ctx.ellipse(bsx, bsy + 16, 27, 5, 0, 0, 7); ctx.fill();
-  ctx.fillStyle = '#c9a15c'; rr(bsx - 26, bsy - 6, 52, 22, 5); ctx.fill();
-  ctx.fillStyle = '#a9834a'; rr(bsx - 26, bsy + 2, 52, 4, 2); ctx.fill();
-  var vg = Math.min(S.veg, 8);
-  for (var v = 0; v < vg; v++) {
-    drawCan(bsx - 18 + (v % 4) * 12, bsy - 11 - Math.floor(v / 4) * 12, 0.42);
+  // 罐頭木箱（裝好的罐頭）— 兩排時空間不夠，省略
+  if (rows === 1) {
+    var bsx = z.x + z.w * 0.5 + 22, bsy = topY + 42;
+    ctx.fillStyle = 'rgba(0,0,0,0.15)'; ctx.beginPath(); ctx.ellipse(bsx, bsy + 16, 27, 5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#c9a15c'; rr(bsx - 26, bsy - 6, 52, 22, 5); ctx.fill();
+    ctx.fillStyle = '#a9834a'; rr(bsx - 26, bsy + 2, 52, 4, 2); ctx.fill();
+    var vg = Math.min(S.veg, 8);
+    for (var v = 0; v < vg; v++) {
+      drawCan(bsx - 18 + (v % 4) * 12, bsy - 11 - Math.floor(v / 4) * 12, 0.42);
+    }
+    if (S.veg > 8) { txt('+' + (S.veg - 8), bsx + 28, bsy, 11, '#eaffb0'); }
   }
-  if (S.veg > 8) { txt('+' + (S.veg - 8), bsx + 28, bsy, 11, '#eaffb0'); }
   signPlank(z.x + 10, z.y + 3, z.w - 20, '🥫 裝罐廠 x' + n + (S.crop > 0 ? '・玉米 ' + S.crop : ''), hot);
 }
 function drawStall(hot) {
