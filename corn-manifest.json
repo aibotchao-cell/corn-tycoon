@@ -1,0 +1,17 @@
+{
+  "name": "玉米罐頭大亨",
+  "short_name": "玉米罐頭",
+  "description": "種玉米 → 做成罐頭 → 上架賣；三段自動化＋輸送帶",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#3f6b34",
+  "theme_color": "#6db35a",
+  "lang": "zh-Hant",
+  "icons": [
+    { "src": "corn-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "corn-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "corn-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
